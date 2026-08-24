@@ -1,0 +1,7 @@
+# Logs & Temporary files
+*.log
+.DS_Store
+Thumbs.db
+
+# Windows temporary files
+desktop.ini

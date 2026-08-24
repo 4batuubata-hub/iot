@@ -1,0 +1,1295 @@
+#include <SPI.h>
+#include <Ethernet.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Keypad.h>
+#include <RTClib.h>
+
+byte mac[]    = { 0xDE, 0xAD, 0xBA, 0xEF, 0xBA, 0xCA };
+IPAddress ip(192, 168, 2, 110);
+IPAddress server(192, 168, 2, 203); // MQTT broker
+
+EthernetClient ethClient;
+PubSubClient client(ethClient);
+EthernetServer serverHTTP(80);
+
+unsigned long lastReconnectAttempt = 0;
+unsigned long lastPublish = 0;
+const unsigned long publishInterval = 10000;
+
+//EEPROM
+#define EEPROM_ADDRESS 0x50  // Alamat I2C EEPROM AT24C256
+#define INIT_FLAG_ADDR 0
+
+unsigned int eepromAddress = 550;
+
+RTC_DS3231 rtc;
+char timestamp[30];
+
+// Inisialisasi LCD I2C
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+const uint8_t ROWS = 4;
+const uint8_t COLS = 4;
+char keys[ROWS][COLS] = {
+  { '1', '2', '3', 'A' },
+  { '4', '5', '6', 'B' },
+  { '7', '8', '9', 'C' },
+  { '*', '0', '#', 'D' }
+};
+uint8_t rowPins[ROWS] = {49, 47, 45, 43};    // R1, R2, R3, R4
+uint8_t colPins[COLS] = {11, 9, 8, 14};  // C1, C2, C3, C4
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+String partID = "", prosesDesc = "", mcStatus = "off", lastop_NIK = "", mcInfo = "Mesin Off", previousMcInfo = "Stand By", previousMcStatus = "off";
+String mcID = "2WR2-024";
+unsigned long previousMillis = 0, previousMillis1 = 0, previousMillis2 = 0, previousMillis3 = 0;
+const unsigned long intervalScroll = 1500;
+int posisi1 = 0, posisi2 = 0, posisi3 = 0;
+
+unsigned long lastUpdateTime = 0;
+struct DataEEPROM {
+    byte selectCode = 0;
+    String op_NIK = "";
+    unsigned int cycleCount = 0;
+    unsigned int NGCount = 0;
+    unsigned long mesinOffTime = 0;
+    unsigned long mesinAlarmTime = 0;
+    unsigned long mesinRunningTime = 0;
+    unsigned long standByTime = 0;
+    unsigned int p5mTime = 0;
+    unsigned int p5p5rTime = 0;
+    unsigned int sholatTime = 0;
+    unsigned int toiletTime = 0;
+    unsigned int minumTime = 0;
+    unsigned int teachingTime = 0;
+    unsigned int wireLasTime = 0;
+    unsigned int dandoryTime = 0;
+    unsigned int nozzleTime = 0;
+    unsigned int saranaTime = 0;
+    unsigned int tpmTime = 0;
+    unsigned int qualitasTime = 0;
+    unsigned int inspJigTime = 0;
+    unsigned int refillTime = 0;
+    unsigned int jigProsesTime = 0;
+    unsigned int mesinTime = 0;
+    unsigned int qcTrialTime = 0;
+    unsigned int engTrialTime = 0;
+    unsigned int materialHabisTime = 0;
+    unsigned int izinTime = 0;
+    unsigned int ojtTime = 0;
+    unsigned int tambahanTime = 0;
+    unsigned int perawatanTime = 0;
+    unsigned int noPlanTime = 0;
+    unsigned int tungguMaterialTime = 0;
+};
+DataEEPROM data;
+
+unsigned int lastOKCount = 0, lastNGCount = 0;
+bool backlightState = true;
+bool forceUpdate = false;
+
+bool ledState = true;
+
+bool inputEnabled = false;
+char key;
+unsigned long nikSavedTime = 0;
+bool showSavedMessage = false;   // Flag untuk menampilkan pesan NIK tersimpan
+
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+int cycleCountSaved = 0;
+int cycleCountRecieved = 0;
+unsigned int cycleCount = 0;
+volatile unsigned long prodCount = 0;
+
+String code, partName, partNumber, prosesName, cust, line;
+int cavity;
+unsigned int OKCount = 0;
+unsigned long lastButtonTime = 0;
+unsigned long lastSerialTime = 0;
+const int buttonDebounceDelay = 50;
+bool lastStateUp = HIGH;
+bool lastStateDown = HIGH;
+bool lastStateOk = HIGH;
+bool dataChanged = true;
+
+const int ngAdd = 25;
+const int ngSub = 37;
+int NGCountSaved = 0;
+int NGCountAdd = 0;
+bool lastStateNgAdd = HIGH;
+bool lastStateNgSub = HIGH;
+unsigned long pressStartTime = 0;
+bool isPressed = false;
+
+// Definisi pin
+#define mcON A0
+#define mcRun A1
+#define alarmPin A2
+#define PB_OK 30
+#define PB_UP 4
+#define PB_DOWN 42
+#define pb1 7
+#define pb2 27
+#define pb3 23
+#define pb4 29
+#define pb5 22
+#define pb6 28
+#define pb7 36
+#define pb8 41
+#define pb9 34
+#define pb10 39
+#define pb11 32
+#define pb12 5
+#define pb13 35
+#define pb14 26
+#define pb15 33
+#define pb16 46
+#define pb17 31
+#define pb18 24
+#define pb19 44
+#define pb20 6
+#define pb21 48
+#define pb22 40
+#define pb23 3
+#define pb24 38
+#define pb25 2
+#define brokerLed 13
+#define stopLed 12
+
+extern int __heap_start, *__brkval;
+int freeMemory() {
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int)__brkval);
+}
+
+void setup() {
+  Serial.begin(9600); // Untuk debug
+  Serial.println("WELCOME");
+  /*
+  //Check for Ethernet hardware present
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("Ethernet shield Tidak ditemukan.");
+    while (true) {
+    delay(1); // do nothing, no point running without Ethernet hardware
+    }
+  }
+  Serial.println("Ethernet shield OK");
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("Ethernet cable is not connected.");
+  }
+  Serial.println("kabel Ethernet shield OK");
+*/
+  Ethernet.begin(mac, ip);
+  delay(1000);
+  
+  client.setServer(server, 1883);
+  client.setKeepAlive(60);
+  
+  serverHTTP.begin(); // Mulai HTTP server
+  
+  Wire.begin(); // Inisialisasi I2C sebagai Master
+    
+  lcd.init();
+  lcd.backlight();
+
+  // Cek RTC
+  if (! rtc.begin()) {
+  	lcd.setCursor(8, 1);	lcd.print("RTC");
+	  lcd.setCursor(3, 2);	lcd.print("TIDAK TERPASANG");
+    Serial.println("RTC Tidak Ditemukan");
+    Serial.flush();
+//    abort();
+  }
+//  rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
+  // Cek apakah EEPROM sudah diinisialisasi
+  if (readEEPROM(INIT_FLAG_ADDR) != 0xA5) {
+      Serial.println("EEPROM kosong! Menginisialisasi data awal...");
+      // Simpan data awal ke EEPROM
+      saveDataToEEPROM(data);
+      writeByteToEEPROM(INIT_FLAG_ADDR, 0xA5); // Set initial flag
+      Serial.println("Data awal telah disimpan ke EEPROM.");
+  } else {
+      Serial.println("EEPROM sudah ada data, membaca dari EEPROM...");
+      readDataFromEEPROM();
+  }
+
+  pinMode(10, OUTPUT); // CS untuk W5100
+  pinMode(53, OUTPUT); // SS di Mega harus OUTPUT, walau nggak dipakai
+  pinMode(PB_OK, INPUT_PULLUP);
+  pinMode(PB_UP, INPUT_PULLUP);
+  pinMode(PB_DOWN, INPUT_PULLUP);
+  pinMode(ngAdd, INPUT_PULLUP);
+  pinMode(ngSub, INPUT_PULLUP);
+  pinMode(mcON, INPUT_PULLUP);
+  pinMode(alarmPin, INPUT_PULLUP);
+  pinMode(mcRun, INPUT_PULLUP);
+  pinMode(pb1, INPUT_PULLUP);
+  pinMode(pb2, INPUT_PULLUP);
+  pinMode(pb3, INPUT_PULLUP);
+  pinMode(pb4, INPUT_PULLUP);
+  pinMode(pb5, INPUT_PULLUP);
+  pinMode(pb6, INPUT_PULLUP);
+  pinMode(pb7, INPUT_PULLUP);
+  pinMode(pb8, INPUT_PULLUP);
+  pinMode(pb9, INPUT_PULLUP);
+  pinMode(pb10, INPUT_PULLUP);
+  pinMode(pb11, INPUT_PULLUP);
+  pinMode(pb12, INPUT_PULLUP);
+  pinMode(pb13, INPUT_PULLUP);
+  pinMode(pb14, INPUT_PULLUP);
+  pinMode(pb15, INPUT_PULLUP);
+  pinMode(pb16, INPUT_PULLUP);
+  pinMode(pb17, INPUT_PULLUP);
+  pinMode(pb18, INPUT_PULLUP);
+  pinMode(pb19, INPUT_PULLUP);
+  pinMode(pb20, INPUT_PULLUP);
+  pinMode(pb21, INPUT_PULLUP);
+  pinMode(pb22, INPUT_PULLUP);
+  pinMode(pb23, INPUT_PULLUP);
+  pinMode(pb24, INPUT_PULLUP);
+  pinMode(pb25, INPUT_PULLUP);
+  pinMode(brokerLed, OUTPUT);
+  pinMode(stopLed, OUTPUT);
+
+  lcd.clear();
+  lcd.setCursor(4, 0);
+  lcd.print("SMART MACHINE");
+  lcd.setCursor(2, 1);
+  lcd.print("MONITORING SYSTEM");
+  lcd.setCursor(7, 3);
+  lcd.print("PT. CNC");
+  delay(3000);
+  lcd.clear();
+  lcd.setCursor(4, 1);
+  lcd.print("Please wait.");
+
+  unsigned long previousMillis = millis();
+  const long interval = 200;  // Kecepatan loading (ms)
+  int jumlahTitik = 0;
+
+  while (jumlahTitik <= 19) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - previousMillis >= interval) {
+      previousMillis = currentMillis;
+      lcd.setCursor(jumlahTitik, 2);  // Geser kursor ke posisi titik
+      lcd.print(".");                 // Cetak titik
+      jumlahTitik++;                  // Tambah jumlah titik
+    }
+  }
+
+  forceUpdate = true;
+  cycleCountSaved = data.cycleCount;
+
+Serial.print("?? Free RAM: ");
+Serial.println(freeMemory());
+
+}
+
+void loop() {
+/*char key = keypad.getKey();
+  if (key) {
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Key Pressed:");
+    lcd.setCursor(0,1);
+    lcd.print(key);
+  }
+*/
+  if (!client.connected()) {
+    digitalWrite(brokerLed, LOW);
+    unsigned long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      reconnect();
+    }
+  } else {
+    digitalWrite(brokerLed, HIGH);
+    client.loop();
+  }
+
+  if (millis() - lastPublish > publishInterval) {
+    lastPublish = millis();
+    publishData();
+    printData();
+  }
+
+  handleHTTP(); // Cek dan respon jika ada HTTP request
+  
+  //HANDLING COUNTER DARI NANO
+  cycleCountRecieved = readCounterFromNano();
+
+  //HANDLING PERHITUNGAN HASIL PRODUKSI
+  cycleCount = cycleCountSaved + cycleCountRecieved;
+  data.cycleCount = cycleCount;
+  prodCount = cycleCount * cavity;
+
+  //HANDLING mcStatus & mcInfo
+  updateMcStatus();
+
+  //HANDLING TIMESTAMP
+  DateTime now = rtc.now();
+  snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02d",
+             now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+
+  //HANDLING IDENTITAS PART
+  unsigned long currentMillis = millis();
+  bool currentStateUp = digitalRead(PB_UP);
+  bool currentStateDown = digitalRead(PB_DOWN);
+  bool currentStateOk = digitalRead(PB_OK);
+
+  if (currentMillis - lastButtonTime > buttonDebounceDelay) {
+      if (lastStateUp == HIGH && currentStateUp == LOW && currentStateOk == LOW) {
+          data.selectCode++;
+          if (data.selectCode > 9) data.selectCode = 9;
+          lastButtonTime = currentMillis;
+          dataChanged = true;
+      }
+      if (lastStateDown == HIGH && currentStateDown == LOW && currentStateOk == LOW) {
+          data.selectCode--;
+          if (data.selectCode < 0) data.selectCode = 0;
+          lastButtonTime = currentMillis;
+          dataChanged = true;
+      }
+  }
+
+  lastStateUp = currentStateUp;
+  lastStateDown = currentStateDown;
+  lastStateOk = currentStateOk;
+
+  if (dataChanged) {
+      updateData(data.selectCode);
+      dataChanged = false;
+  }
+
+/*
+  //HANDLING LAYAR BERKEDIP
+  if (mcStatus != "run" && !inputEnabled && !showSavedMessage) {
+      if (currentMillis - previousMillis >= 500) {
+          previousMillis = currentMillis;
+          backlightState = !backlightState;
+          if (backlightState) {
+              lcd.backlight();
+          } else {
+              lcd.noBacklight();
+          }
+      }
+  } else {
+      lcd.backlight();
+  }
+*/
+
+  //HANDLING LED BERKEDIP
+  if (mcStatus != "run") {
+      if (currentMillis - previousMillis >= 250) {
+          previousMillis = currentMillis;
+          ledState = !ledState;
+          if (ledState) {
+              digitalWrite(stopLed, HIGH);
+          } else {
+              digitalWrite(stopLed, LOW);
+          }
+      }
+  } else {
+      digitalWrite(stopLed, LOW);
+  }
+
+  //HANDLING RESET VARIABLE
+  if (digitalRead(ngSub) == LOW) {  // Tombol ditekan (aktif LOW)
+      if (!isPressed) {  // Jika tombol baru saja ditekan
+          pressStartTime = millis();  // Catat waktu awal tekan
+          isPressed = true;
+      }
+      else if (millis() - pressStartTime >= 5000) {  // Jika tombol ditekan selama 5 detik
+          resetData();  // Panggil fungsi reset
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Data berhasil");
+          lcd.setCursor(0, 1);
+          lcd.print("di reset.");
+          showSavedMessage = true;  // Aktifkan flag untuk menampilkan pesan
+          nikSavedTime = millis();  // Catat waktu saat pesan ditampilkan
+      }
+  } else {  // Tombol dilepas
+      isPressed = false;
+  }
+
+  //HANDLING KEYPAD NIK
+  key = keypad.getKey();
+  if (key) {
+      // Mode Input NIK (Tombol "A" untuk masuk ke mode input)
+      if (key == 'A') {
+          inputEnabled = true;
+          data.op_NIK = "";
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Silahkan masukan");
+          lcd.setCursor(0, 1);
+          lcd.print("NIK anda:");
+          key = 0;
+      }
+  }
+
+    // Jalankan fungsi input NIK jika mode aktif
+  if (inputEnabled) {
+    handleNIKInput();
+  }
+
+ if (showSavedMessage && millis() - nikSavedTime >= 1500) {
+    lcd.clear();
+    showSavedMessage = false;
+    forceUpdate = true;
+    isPressed = false;
+    }
+
+  //HANDLING MAIN SCREEN
+  if (!inputEnabled && !showSavedMessage) {
+    updatePartID();
+    updateProsesDesc();
+    updatemcInfo();
+    updateOperatorNIK();
+    updateOKCount();
+    updateNGCount();
+    forceUpdate = false;
+  }
+
+  //HANDLING COUNTER NG
+  updateNg();
+
+  //HANDLING PRINT DATA KE SERIAL & SAVE EEPROM
+  if (currentMillis - lastSerialTime > 2000) {
+      saveDataToEEPROM(data);
+      lastSerialTime = currentMillis;
+  }
+
+  //HANDLING HITUNG LOSS TIME
+  hitungLoss();
+
+}
+
+void handleNIKInput() {
+  if (key) {
+    if (key >= '0' && key <= '9') {
+      if (data.op_NIK.length() < 8) {
+        data.op_NIK += key;
+        lcd.setCursor(0, 2);
+        lcd.print(data.op_NIK);
+      } else {
+        lcd.setCursor(0, 3);
+        lcd.print("                    ");
+        lcd.setCursor(0, 3);
+        lcd.print("Maks 8 digit!");
+      }
+    } else if (key == 'B') { // Tombol backspace
+      if (data.op_NIK.length() > 0) {
+        data.op_NIK.remove(data.op_NIK.length() - 1);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Silahkan masukan");
+        lcd.setCursor(0, 1);
+        lcd.print("NIK anda:");
+        lcd.setCursor(0, 2);
+        lcd.print(data.op_NIK);
+      }
+    } else if (key == 'D') {
+      if (data.op_NIK.length() == 8) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("NIK tersimpan");
+        lcd.setCursor(0, 1);
+        lcd.print(data.op_NIK);
+        showSavedMessage = true;
+		    inputEnabled = false;
+        nikSavedTime = millis();
+      } else {
+        lcd.setCursor(0, 3);
+        lcd.print("                    ");
+        lcd.setCursor(0, 3);
+        lcd.print("NIK harus 8 digit!");
+      }
+    } else {
+      lcd.setCursor(0, 3);
+      lcd.print("                    ");
+      lcd.setCursor(0, 3);
+      lcd.print("Input tidak valid!");
+    }
+  }
+}
+
+void updatePartID() {
+    static String lastPartID = "";
+    if (partID.length() > 20) {
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis1 >= intervalScroll) {
+            previousMillis1 = currentMillis;
+            lcd.setCursor(0, 0);
+            lcd.print("                    ");
+            lcd.setCursor(0, 0);
+            lcd.print(partID.substring(posisi1, posisi1 + 20));
+            posisi1 += 5;
+            if (posisi1 >= partID.length() - 15) posisi1 = 0;
+        }
+    } else if (partID != lastPartID || forceUpdate) {
+        lcd.setCursor(0, 0);
+        lcd.print("                    ");
+        lcd.setCursor(0, 0);
+        lcd.print(partID);
+        lastPartID = partID;
+    }
+}
+
+void updateProsesDesc() {
+    static String lastProsesDesc = "";
+    if (prosesDesc.length() > 20) {
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis2 >= intervalScroll) {
+            previousMillis2 = currentMillis;
+            lcd.setCursor(0, 1);
+            lcd.print("                    ");
+            lcd.setCursor(0, 1);
+            lcd.print(prosesDesc.substring(posisi2, posisi2 + 20));
+            posisi2 += 5;
+            if (posisi2 >= prosesDesc.length() - 15) posisi2 = 0;
+        }
+    } else if (prosesDesc != lastProsesDesc || forceUpdate) {
+        lcd.setCursor(0, 1);
+        lcd.print("                    ");
+        lcd.setCursor(0, 1);
+        lcd.print(prosesDesc);
+        lastProsesDesc = prosesDesc;
+    }
+}
+
+void updatemcInfo() {
+    static String lastmcInfo = "";
+    if (mcInfo.length() > 20) {
+        unsigned long currentMillis = millis();
+        if (currentMillis - previousMillis3 >= intervalScroll) {
+            previousMillis3 = currentMillis;
+            lcd.setCursor(0, 2);
+            lcd.print("                    ");
+            lcd.setCursor(0, 2);
+            lcd.print(mcInfo.substring(posisi3, posisi3 + 20));
+            posisi3 += 5;
+            if (posisi3 >= mcInfo.length() - 15) posisi3 = 0;
+        }
+    } else if (mcInfo != lastmcInfo || forceUpdate) {
+        lcd.setCursor(0, 2);
+        lcd.print("                    ");
+        lcd.setCursor(0, 2);
+        lcd.print(mcInfo);
+        lastmcInfo = mcInfo;
+    }
+}
+
+void updateOperatorNIK() {
+    if (data.op_NIK != lastop_NIK || forceUpdate) {
+        lcd.setCursor(0, 3);
+        lcd.print("         ");
+        lcd.setCursor(0, 3);
+        lcd.print(data.op_NIK);
+        lastop_NIK = data.op_NIK;
+    }
+}
+
+void updateOKCount() {
+    OKCount = prodCount - data.NGCount;
+    if (OKCount != lastOKCount || forceUpdate) {
+        lcd.setCursor(9, 3);
+        lcd.print("|      ");
+        lcd.setCursor(11, 3);
+        lcd.print(OKCount);
+        lastOKCount = OKCount;
+    }
+}
+
+void updateNGCount() {
+    if (data.NGCount != lastNGCount || forceUpdate) {
+        lcd.setCursor(16, 3);
+        lcd.print("/   ");
+        lcd.setCursor(17, 3);
+        lcd.print(data.NGCount);
+        lastNGCount = data.NGCount;
+    }
+}
+
+void updateMcStatus() {
+    bool mcOnState = digitalRead(mcON) == LOW;
+    bool alarmState = digitalRead(alarmPin) == HIGH;
+    bool mcRunState = digitalRead(mcRun) == HIGH;
+
+    if (!mcOnState) {
+        mcStatus = "off";
+        mcInfo = "Mesin Off";
+    } else if (!alarmState) {
+        mcStatus = "alarm";
+        mcInfo = "Mesin Alarm";
+    } else if (!mcRunState) {
+        mcStatus = "run";
+        mcInfo = "Mesin Running";
+    } else {
+        mcStatus = "standBy";
+        if (previousMcStatus != "standBy") {
+            previousMcInfo = "Stand By";
+        }
+        checkAndUpdateMcInfo();
+    }
+    previousMcStatus = mcStatus;
+}
+
+void checkAndUpdateMcInfo() {
+    String currentMcInfo = previousMcInfo;
+    if (digitalRead(pb1) == LOW) currentMcInfo = "Toilet";
+    else if (digitalRead(pb2) == LOW) currentMcInfo = "Tidak Ada Planning";
+    else if (digitalRead(pb3) == LOW) currentMcInfo = "OJT";
+    else if (digitalRead(pb4) == LOW) currentMcInfo = "Operator Izin";
+    else if (digitalRead(pb5) == LOW) currentMcInfo = "Perawatan Maintanance";
+    else if (digitalRead(pb6) == LOW) currentMcInfo = "Problem Jig Proses";
+    else if (digitalRead(pb7) == LOW) currentMcInfo = "Problem Mesin";
+    else if (digitalRead(pb8) == LOW) currentMcInfo = "Tunggu Material";
+    else if (digitalRead(pb9) == LOW) currentMcInfo = "QC Trial";
+    else if (digitalRead(pb10) == LOW) currentMcInfo = "ENG Trial";
+    else if (digitalRead(pb11) == LOW) currentMcInfo = "Material Habis";
+    else if (digitalRead(pb12) == LOW) currentMcInfo = "P5M";
+    else if (digitalRead(pb13) == LOW) currentMcInfo = "Tambahan Proses";
+    else if (digitalRead(pb14) == LOW) currentMcInfo = "Refill Material";
+    else if (digitalRead(pb15) == LOW) currentMcInfo = "Wire Las Macet";
+    else if (digitalRead(pb16) == LOW) currentMcInfo = "Minum";
+    else if (digitalRead(pb17) == LOW) currentMcInfo = "Nozzle / Contac Tip";
+    else if (digitalRead(pb18) == LOW) currentMcInfo = "Teaching";
+    else if (digitalRead(pb19) == LOW) currentMcInfo = "Sholat";
+    else if (digitalRead(pb20) == LOW) currentMcInfo = "5P/5R";
+    else if (digitalRead(pb21) == LOW) currentMcInfo = "Dandory";
+    else if (digitalRead(pb22) == LOW) currentMcInfo = "Problem Insp Jig";
+    else if (digitalRead(pb23) == LOW) currentMcInfo = "Problem Qualitas";
+    else if (digitalRead(pb24) == LOW) currentMcInfo = "Persiapan Sarana Proses";
+    else if (digitalRead(pb25) == LOW) currentMcInfo = "TPM";
+
+    mcInfo = currentMcInfo;
+    previousMcInfo = currentMcInfo;
+}
+
+void updateNg() {
+  unsigned long currentTime = millis();
+  bool currentStateAdd = digitalRead(ngAdd);
+  bool currentStateSub = digitalRead(ngSub);
+
+  if (currentTime - lastDebounceTime > debounceDelay) {
+      if (lastStateNgAdd == HIGH && currentStateAdd == LOW) {
+          if (data.NGCount < prodCount) {
+                data.NGCount++;
+                lastDebounceTime = currentTime;
+          }
+      }
+
+      if (lastStateNgSub == HIGH && currentStateSub == LOW) {
+          if (data.NGCount > 0) {
+              data.NGCount--;
+              lastDebounceTime = currentTime;
+          }
+      }
+    }
+
+  lastStateNgAdd = currentStateAdd;
+  lastStateNgSub = currentStateSub;
+}
+
+void updateData(byte selectCode) {
+  switch (selectCode) {
+      case 0:
+          code = "1"; partName = "HANDLE COMP"; partNumber = "BJMXF611000080"; partID = "HANDLE COMP BJMXF611000080";
+          prosesName = "Assy"; prosesDesc = "Assy Welding 3, 4";
+          cust = "YIMM"; line = "HANDLE COMP ASSY"; cavity = 1;
+          break;
+      case 1:
+          code = "2"; partName = "HANDLE COMP"; partNumber = "BEJF6110100080"; partID = "HANDLE COMP BEJF6110100080";
+          prosesName = "Assy"; prosesDesc = "Assy 3-4";
+          cust = "YIMM"; line = "HANDLE COMP ASSY"; cavity = 1;
+          break;
+      case 2:
+          code = "3"; partName = "HANDLE COMP"; partNumber = "BEJF6110100080"; partID = "HANDLE COMP BEJF6110100080";
+          prosesName = "Assy"; prosesDesc = "Assy 1-2";
+          cust = "YIMM"; line = "HANDLE COMP ASSY"; cavity = 1;
+          break;
+      case 3:
+          code = "4"; partName = "Plate"; partNumber = "2DP-E111F-00"; partID = "Plate 2DP-E111F-00";
+          prosesName = "Blank"; prosesDesc = "Pierce Blank + Marking";
+          cust = "YIMM"; line = "PRESSING 1"; cavity = 2;
+          break;
+      case 4:
+          code = "5"; partName = "HANDLE COMP"; partNumber = "BJMXF611000080"; partID = "HANDLE COMP BJMXF611000080";
+          prosesName = "Assy"; prosesDesc = "Assy Welding 1-2";
+          cust = "YIMM"; line = "HANDLE COMP ASSY"; cavity = 1;
+          break;
+      case 5:
+          code = "6"; partName = "BRKT.,FUEL PUMP"; partNumber = "2DP-F4491-00"; partID = "BRKT.,FUEL PUMP 2DP-F4491-00";
+          prosesName = "Forming"; prosesDesc = "Forming 2";
+          cust = "YIMM"; line = "PRESSING 1"; cavity = 2;
+          break;
+      case 6:
+          code = "7"; partName = "HANDLE BAR"; partNumber = "B3M-F6111-00"; partID = "HANDLE BAR B3M-F6111-00";
+          prosesName = "Knurling"; prosesDesc = "Knurling + Check Visual + Marking";
+          cust = "YIMM"; line = "HANDLE COMP ASSY"; cavity = 1;
+          break;
+      case 7:
+          code = "8"; partName = "PIPE,STEERING HEAD ASSY"; partNumber = "BEJXF131000080"; partID = "PIPE,STEERING HEAD ASSY BEJXF131000080";
+          prosesName = "Machining"; prosesDesc = "Machining BEJ 1 Spindle + Check Insp. Jig + Check Visual + Packing";
+          cust = "YIMM"; line = "WELDING UMUM"; cavity = 2;
+          break;
+      case 8:
+          code = "9"; partName = "BRKT. FUEL PUMP"; partNumber = "B6H-F4491-00"; partID = "BRKT. FUEL PUMP B6H-F4491-00";
+          prosesName = "Pierce"; prosesDesc = "Pierce (4 x Ø6), Trimming + Bending";
+          cust = "YIMM"; line = "PRESSING 1"; cavity = 1;
+          break;
+      case 9:
+          code = "10"; partName = "STAY,FENDER 1"; partNumber = "BJMF1513000080"; partID = "STAY,FENDER 1 BJMF1513000080";
+          prosesName = "Spot"; prosesDesc = "Spot Plate";
+          cust = "YIMM"; line = "SPOT WELDING"; cavity = 2;
+          break;
+    }
+}
+
+void printData() {
+  /*
+    Serial.print("Timestamp: "); Serial.println(timestamp);
+    Serial.print("ID Mesin: "); Serial.println(mcID);
+    Serial.print("Status Mesin: "); Serial.println(mcStatus);
+    Serial.print("Info Mesin: "); Serial.println(mcInfo);
+    Serial.print("NIK Operator: "); Serial.println(data.op_NIK);
+    Serial.print("Select Code: "); Serial.println(data.selectCode);
+    Serial.print("Kode: "); Serial.println(code);
+    Serial.print("Part Name: "); Serial.println(partName);
+    Serial.print("Part Number: "); Serial.println(partNumber);
+    Serial.print("Part ID: "); Serial.println(partID);
+    Serial.print("Proses Name: "); Serial.println(prosesName);
+    Serial.print("Proses Desc: "); Serial.println(prosesDesc);
+    Serial.print("Customer: "); Serial.println(cust);
+    Serial.print("Line: "); Serial.println(line);
+    Serial.print("Cavity: "); Serial.println(cavity);
+    Serial.print("Quantity Produksi: "); Serial.println(prodCount);
+    Serial.print("NG: "); Serial.println(data.NGCount);
+    Serial.print("Mesin Off: "); Serial.println(data.mesinOffTime);
+    Serial.print("Mesin Alarm: "); Serial.println(data.mesinAlarmTime);
+    Serial.print("Mesin Running: "); Serial.println(data.mesinRunningTime);
+    Serial.print("Stand By: "); Serial.println(data.standByTime);
+    Serial.print("P5M: "); Serial.println(data.p5mTime);
+    Serial.print("5P/5R: "); Serial.println(data.p5p5rTime);
+    Serial.print("Sholat: "); Serial.println(data.sholatTime);
+    Serial.print("Toilet: "); Serial.println(data.toiletTime);
+    Serial.print("Minum: "); Serial.println(data.minumTime);
+    Serial.print("Teaching: "); Serial.println(data.teachingTime);
+    Serial.print("Wire Las Macet: "); Serial.println(data.wireLasTime);
+    Serial.print("Dandory: "); Serial.println(data.dandoryTime);
+    Serial.print("Nozzle / Contac Tip: "); Serial.println(data.nozzleTime);
+    Serial.print("Persiapan Sarana Proses: "); Serial.println(data.saranaTime);
+    Serial.print("TPM: "); Serial.println(data.tpmTime);
+    Serial.print("Problem Qualitas: "); Serial.println(data.qualitasTime);
+    Serial.print("Problem Insp Jig: "); Serial.println(data.inspJigTime);
+    Serial.print("Refill Material: "); Serial.println(data.refillTime);
+    Serial.print("Problem Jig Proses: "); Serial.println(data.jigProsesTime);
+    Serial.print("Problem Mesin: "); Serial.println(data.mesinTime);
+    Serial.print("QC Trial: "); Serial.println(data.qcTrialTime);
+    Serial.print("ENG Trial: "); Serial.println(data.engTrialTime);
+    Serial.print("Material Habis: "); Serial.println(data.materialHabisTime);
+    Serial.print("Operator Izin: "); Serial.println(data.izinTime);
+    Serial.print("OJT: "); Serial.println(data.ojtTime);
+    Serial.print("Tambahan Proses: "); Serial.println(data.tambahanTime);
+    Serial.print("Perawatan Maintanance: "); Serial.println(data.perawatanTime);
+    Serial.print("Tidak Ada Planning: "); Serial.println(data.noPlanTime);
+    Serial.print("Tunggu Material: "); Serial.println(data.tungguMaterialTime);
+    Serial.print("Quantity Produksi: "); Serial.println(prodCount);
+    Serial.print("NG: "); Serial.println(data.NGCount);
+    Serial.print("cycleCount: "); Serial.println(cycleCount);
+    Serial.print("lastOKCount: "); Serial.println(lastOKCount);
+    Serial.print("lastNGCount: "); Serial.println(lastNGCount);
+    Serial.print("cycleCountSaved: "); Serial.println(cycleCountSaved);
+    Serial.print("cycleCountRecieved: "); Serial.println(cycleCountRecieved);
+    Serial.print("OKCount: "); Serial.println(OKCount);
+    Serial.println("================================");
+    */
+}
+
+void hitungLoss() {
+    unsigned long currentTime = millis();
+    if (currentTime - lastUpdateTime >= 1000) {
+        lastUpdateTime = currentTime;
+
+        if (mcInfo == "Mesin Off") data.mesinOffTime++;
+        else if (mcInfo == "Mesin Alarm") data.mesinAlarmTime++;
+        else if (mcInfo == "Mesin Running") data.mesinRunningTime++;
+        else if (mcInfo == "Stand By") data.standByTime++;
+        else if (mcInfo == "P5M") data.p5mTime++;
+        else if (mcInfo == "5P/5R") data.p5p5rTime++;
+        else if (mcInfo == "Sholat") data.sholatTime++;
+        else if (mcInfo == "Toilet") data.toiletTime++;
+        else if (mcInfo == "Minum") data.minumTime++;
+        else if (mcInfo == "Teaching") data.teachingTime++;
+        else if (mcInfo == "Wire Las Macet") data.wireLasTime++;
+        else if (mcInfo == "Dandory") data.dandoryTime++;
+        else if (mcInfo == "Nozzle / Contac Tip") data.nozzleTime++;
+        else if (mcInfo == "Persiapan Sarana Proses") data.saranaTime++;
+        else if (mcInfo == "Problem Qualitas") data.qualitasTime++;
+        else if (mcInfo == "Problem Insp Jig") data.inspJigTime++;
+        else if (mcInfo == "Refill Material") data.refillTime++;
+        else if (mcInfo == "Problem Jig Proses") data.jigProsesTime++;
+        else if (mcInfo == "Problem Mesin") data.mesinTime++;
+        else if (mcInfo == "QC Trial") data.qcTrialTime++;
+        else if (mcInfo == "ENG Trial") data.engTrialTime++;
+        else if (mcInfo == "Material Habis") data.materialHabisTime++;
+        else if (mcInfo == "Operator Izin") data.izinTime++;
+        else if (mcInfo == "TPM") data.tpmTime++;
+        else if (mcInfo == "OJT") data.ojtTime++;
+        else if (mcInfo == "Tambahan Proses") data.tambahanTime++;
+        else if (mcInfo == "Perawatan Maintanance") data.perawatanTime++;
+        else if (mcInfo == "Tidak Ada Planning") data.noPlanTime++;
+        else if (mcInfo == "Tunggu Material") data.tungguMaterialTime++;
+    }
+}
+
+// ========== EEPROM FUNCTIONS ==========
+void saveDataToEEPROM(DataEEPROM data) {
+    eepromAddress = 550;
+    writeStringToEEPROM(eepromAddress, data.op_NIK); eepromAddress += data.op_NIK.length() + 1;
+    writeByteToEEPROM(eepromAddress, data.selectCode); eepromAddress += sizeof(data.selectCode);
+    writeIntToEEPROM(eepromAddress, data.cycleCount); eepromAddress += sizeof(data.cycleCount);
+    writeIntToEEPROM(eepromAddress, data.NGCount); eepromAddress += sizeof(data.NGCount);
+    writeIntToEEPROM(eepromAddress, data.p5mTime); eepromAddress += sizeof(data.p5mTime);
+    writeIntToEEPROM(eepromAddress, data.p5p5rTime); eepromAddress += sizeof(data.p5p5rTime);
+    writeIntToEEPROM(eepromAddress, data.sholatTime); eepromAddress += sizeof(data.sholatTime);
+    writeIntToEEPROM(eepromAddress, data.toiletTime); eepromAddress += sizeof(data.toiletTime);
+    writeIntToEEPROM(eepromAddress, data.minumTime); eepromAddress += sizeof(data.minumTime);
+    writeIntToEEPROM(eepromAddress, data.teachingTime); eepromAddress += sizeof(data.teachingTime) + 2;
+    writeIntToEEPROM(eepromAddress, data.wireLasTime); eepromAddress += sizeof(data.wireLasTime);
+    writeIntToEEPROM(eepromAddress, data.dandoryTime); eepromAddress += sizeof(data.dandoryTime);
+    writeIntToEEPROM(eepromAddress, data.nozzleTime); eepromAddress += sizeof(data.nozzleTime);
+    writeIntToEEPROM(eepromAddress, data.saranaTime); eepromAddress += sizeof(data.saranaTime);
+    writeIntToEEPROM(eepromAddress, data.tpmTime); eepromAddress += sizeof(data.tpmTime);
+    writeIntToEEPROM(eepromAddress, data.qualitasTime); eepromAddress += sizeof(data.qualitasTime);
+    writeIntToEEPROM(eepromAddress, data.inspJigTime); eepromAddress += sizeof(data.inspJigTime);
+    writeIntToEEPROM(eepromAddress, data.refillTime); eepromAddress += sizeof(data.refillTime);
+    writeIntToEEPROM(eepromAddress, data.jigProsesTime); eepromAddress += sizeof(data.jigProsesTime);
+    writeIntToEEPROM(eepromAddress, data.mesinTime); eepromAddress += sizeof(data.mesinTime);
+    writeIntToEEPROM(eepromAddress, data.qcTrialTime); eepromAddress += sizeof(data.qcTrialTime);
+    writeIntToEEPROM(eepromAddress, data.engTrialTime); eepromAddress += sizeof(data.engTrialTime);
+    writeIntToEEPROM(eepromAddress, data.materialHabisTime); eepromAddress += sizeof(data.materialHabisTime);
+    writeIntToEEPROM(eepromAddress, data.izinTime); eepromAddress += sizeof(data.izinTime);
+    writeIntToEEPROM(eepromAddress, data.ojtTime); eepromAddress += sizeof(data.ojtTime);
+    writeIntToEEPROM(eepromAddress, data.tambahanTime); eepromAddress += sizeof(data.tambahanTime);
+    writeIntToEEPROM(eepromAddress, data.perawatanTime); eepromAddress += sizeof(data.perawatanTime);
+    writeIntToEEPROM(eepromAddress, data.noPlanTime); eepromAddress += sizeof(data.noPlanTime);
+    writeIntToEEPROM(eepromAddress, data.tungguMaterialTime); eepromAddress += sizeof(data.tungguMaterialTime);
+    writeLongToEEPROM(eepromAddress, data.mesinOffTime); eepromAddress += sizeof(data.mesinOffTime);
+    writeLongToEEPROM(eepromAddress, data.mesinAlarmTime); eepromAddress += sizeof(data.mesinAlarmTime);
+    writeLongToEEPROM(eepromAddress, data.mesinRunningTime); eepromAddress += sizeof(data.mesinRunningTime);
+    writeLongToEEPROM(eepromAddress, data.standByTime); eepromAddress += sizeof(data.standByTime);
+}
+
+void readDataFromEEPROM() {
+    unsigned int addr = 550;
+    data.op_NIK = readStringFromEEPROM(addr); addr += data.op_NIK.length() + 1;
+    data.selectCode = readByteFromEEPROM(addr); addr += sizeof(data.selectCode);
+    data.cycleCount = readIntFromEEPROM(addr); addr += sizeof(data.cycleCount);
+    data.NGCount = readIntFromEEPROM(addr); addr += sizeof(data.NGCount);
+    data.p5mTime = readIntFromEEPROM(addr); addr += sizeof(data.p5mTime);
+    data.p5p5rTime = readIntFromEEPROM(addr); addr += sizeof(data.p5p5rTime);
+    data.sholatTime = readIntFromEEPROM(addr); addr += sizeof(data.sholatTime);
+    data.toiletTime = readIntFromEEPROM(addr); addr += sizeof(data.toiletTime);
+    data.minumTime = readIntFromEEPROM(addr); addr += sizeof(data.minumTime);
+    data.teachingTime = readIntFromEEPROM(addr); addr += sizeof(data.teachingTime) + 2;
+    data.wireLasTime = readIntFromEEPROM(addr); addr += sizeof(data.wireLasTime);
+    data.dandoryTime = readIntFromEEPROM(addr); addr += sizeof(data.dandoryTime);
+    data.nozzleTime = readIntFromEEPROM(addr); addr += sizeof(data.nozzleTime);
+    data.saranaTime = readIntFromEEPROM(addr); addr += sizeof(data.saranaTime);
+    data.tpmTime = readIntFromEEPROM(addr); addr += sizeof(data.tpmTime);
+    data.qualitasTime = readIntFromEEPROM(addr); addr += sizeof(data.qualitasTime);
+    data.inspJigTime = readIntFromEEPROM(addr); addr += sizeof(data.inspJigTime);
+    data.refillTime = readIntFromEEPROM(addr); addr += sizeof(data.refillTime);
+    data.jigProsesTime = readIntFromEEPROM(addr); addr += sizeof(data.jigProsesTime);
+    data.mesinTime = readIntFromEEPROM(addr); addr += sizeof(data.mesinTime);
+    data.qcTrialTime = readIntFromEEPROM(addr); addr += sizeof(data.qcTrialTime);
+    data.engTrialTime = readIntFromEEPROM(addr); addr += sizeof(data.engTrialTime);
+    data.materialHabisTime = readIntFromEEPROM(addr); addr += sizeof(data.materialHabisTime);
+    data.izinTime = readIntFromEEPROM(addr); addr += sizeof(data.izinTime);
+    data.ojtTime = readIntFromEEPROM(addr); addr += sizeof(data.ojtTime);
+    data.tambahanTime = readIntFromEEPROM(addr); addr += sizeof(data.tambahanTime);
+    data.perawatanTime = readIntFromEEPROM(addr); addr += sizeof(data.perawatanTime);
+    data.noPlanTime = readIntFromEEPROM(addr); addr += sizeof(data.noPlanTime);
+    data.tungguMaterialTime = readIntFromEEPROM(addr); addr += sizeof(data.tungguMaterialTime);
+    data.mesinOffTime = readLongFromEEPROM(addr); addr += sizeof(data.mesinOffTime);
+    data.mesinAlarmTime = readLongFromEEPROM(addr); addr += sizeof(data.mesinAlarmTime);
+    data.mesinRunningTime = readLongFromEEPROM(addr); addr += sizeof(data.mesinRunningTime);
+    data.standByTime = readLongFromEEPROM(addr); addr += sizeof(data.standByTime);
+
+    Serial.println("Data yang dibaca dari EEPROM:");
+    Serial.println("Operator NIK: " + data.op_NIK);
+    Serial.println("Select Code: " + String(data.selectCode));
+    Serial.println("Cycle Count: " + String(data.cycleCount));
+    Serial.println("NG Count: " + String(data.NGCount));
+    Serial.println("Mesin Off: " + String(data.mesinOffTime));
+    Serial.println("Mesin Alarm: " + String(data.mesinAlarmTime));
+    Serial.println("Mesin Running: " + String(data.mesinRunningTime));
+    Serial.println("Stand By: " + String(data.standByTime));
+    Serial.println("P5M: " + String(data.p5mTime));
+    Serial.println("5P/5R: " + String(data.p5p5rTime));
+    Serial.println("Sholat: " + String(data.sholatTime));
+    Serial.println("Toilet: " + String(data.toiletTime));
+    Serial.println("Minum: " + String(data.minumTime));
+    Serial.println("Teaching: " + String(data.teachingTime));
+    Serial.println("Wire Las Macet: " + String(data.wireLasTime));
+    Serial.println("Dandory: " + String(data.dandoryTime));
+    Serial.println("Nozzle / Contac Tip: " + String(data.nozzleTime));
+    Serial.println("Persiapan Sarana Proses: " + String(data.saranaTime));
+    Serial.println("TPM: " + String(data.tpmTime));
+    Serial.println("Problem Qualitas: " + String(data.qualitasTime));
+    Serial.println("Problem Insp Jig: " + String(data.inspJigTime));
+    Serial.println("Refill Material: " + String(data.refillTime));
+    Serial.println("Problem Jig Proses: " + String(data.jigProsesTime));
+    Serial.println("Problem Mesin: " + String(data.mesinTime));
+    Serial.println("QC Trial: " + String(data.qcTrialTime));
+    Serial.println("ENG Trial: " + String(data.engTrialTime));
+    Serial.println("Material Habis: " + String(data.materialHabisTime));
+    Serial.println("Operator Izin: " + String(data.izinTime));
+    Serial.println("OJT: " + String(data.ojtTime));
+    Serial.println("Tambahan Proses: " + String(data.tambahanTime));
+    Serial.println("Perawatan Maintanance: " + String(data.perawatanTime));
+    Serial.println("Tidak Ada Planning: " + String(data.noPlanTime));
+    Serial.println("Tunggu Material: " + String(data.tungguMaterialTime));
+    Serial.println("-------------------------");
+}
+
+// ========== EEPROM HELPER FUNCTIONS ==========
+void writeStringToEEPROM(int addr, String data) {
+    int len = data.length();
+    for (int i = 0; i < len; i++) {
+        Wire.beginTransmission(EEPROM_ADDRESS);
+        Wire.write((int)(addr >> 8));
+        Wire.write((int)(addr & 0xFF));
+        Wire.write(data[i]);
+        Wire.endTransmission();
+        delay(5);
+        addr++;
+    }
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((int)(addr >> 8));
+    Wire.write((int)(addr & 0xFF));
+    Wire.write('\0');  // Null terminator
+    Wire.endTransmission();
+    delay(5);
+}
+
+String readStringFromEEPROM(int addr) {
+    char data[32];
+    int len = 0;
+    while (len < 31) {
+        Wire.beginTransmission(EEPROM_ADDRESS);
+        Wire.write((int)(addr >> 8));
+        Wire.write((int)(addr & 0xFF));
+        Wire.endTransmission();
+        Wire.requestFrom(EEPROM_ADDRESS, 1);
+        if (Wire.available()) {
+            char c = Wire.read();
+            if (c == '\0') break;
+            data[len++] = c;
+        }
+        addr++;
+    }
+    data[len] = '\0';
+    return String(data);
+}
+
+
+void writeByteToEEPROM(int addr, byte data) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.write(data);
+    Wire.endTransmission();
+    delay(5);
+}
+
+byte readByteFromEEPROM(int addr) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.endTransmission();
+    Wire.requestFrom(EEPROM_ADDRESS, 1);
+    return Wire.available() ? Wire.read() : 0;
+}
+
+void writeIntToEEPROM(int addr, int data) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.write((data >> 8) & 0xFF);
+    Wire.write(data & 0xFF);
+    Wire.endTransmission();
+    delay(5);
+}
+
+int readIntFromEEPROM(int addr) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.endTransmission();
+    Wire.requestFrom(EEPROM_ADDRESS, 2);
+    int data = (Wire.read() << 8) | Wire.read();
+    return data;
+}
+
+void writeLongToEEPROM(int addr, long data) {
+    // Hapus data dulu sebelum menulis (overwrite dengan 0)
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.write(0x00);
+    Wire.write(0x00);
+    Wire.write(0x00);
+    Wire.write(0x00);
+    Wire.endTransmission();
+    delay(10); // Tambah delay
+
+    // Tulis data baru
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.write((data >> 24) & 0xFF);
+    Wire.write((data >> 16) & 0xFF);
+    Wire.write((data >> 8) & 0xFF);
+    Wire.write(data & 0xFF);
+    Wire.endTransmission();
+    delay(10); // Tambah delay
+}
+
+
+long readLongFromEEPROM(int addr) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.endTransmission();
+
+    Wire.requestFrom(EEPROM_ADDRESS, 4);
+    if (Wire.available() < 4) {
+//        Serial.println("Error: EEPROM Read failed!");
+        return 0;
+    }
+
+    byte b1 = Wire.read();
+    byte b2 = Wire.read();
+    byte b3 = Wire.read();
+    byte b4 = Wire.read();
+
+    long data = ((long)b1 << 24) | ((long)b2 << 16) | ((long)b3 << 8) | b4;
+    return data;
+}
+
+// Fungsi membaca inital flag
+byte readEEPROM(uint16_t addr) {
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.endTransmission();
+
+    Wire.requestFrom(EEPROM_ADDRESS, 1);
+    if (Wire.available()) {
+        return Wire.read();
+    }
+    return 0xFF; // Default jika tidak ada data
+}
+
+// Fungsi untuk membaca counter dari Arduino Nano
+unsigned int readCounterFromNano() {
+  Wire.requestFrom(8, 2); // Minta 2 byte dari Arduino Nano dengan alamat 8
+  if (Wire.available() == 2) {
+    return (Wire.read() << 8) | Wire.read(); // Gabungkan byte tinggi dan rendah
+  }
+}
+
+void resetData() {
+  //reset counter arduino nano
+    Wire.beginTransmission(8);  // Alamat Arduino Nano (Slave)
+    //Wire.write(highByte(0)); // Kirim byte tinggi
+    //Wire.write(lowByte(0));  // Kirim byte rendah
+    Wire.endTransmission(); // Akhiri transmisi
+
+    prodCount = 0;
+    cycleCountSaved = 0;
+    cycleCountRecieved = 0;
+    cycleCount = 0;
+    lastOKCount = 0;
+    OKCount = 0;
+
+    data.selectCode = 0;
+    data.op_NIK = "";
+    data.cycleCount = 0;
+    data.NGCount = 0;
+    data.mesinOffTime = 0;
+    data.mesinAlarmTime = 0;
+    data.mesinRunningTime = 0;
+    data.standByTime = 0;
+    data.p5mTime = 0;
+    data.p5p5rTime = 0;
+    data.sholatTime = 0;
+    data.toiletTime = 0;
+    data.minumTime = 0;
+    data.teachingTime = 0;
+    data.wireLasTime = 0;
+    data.dandoryTime = 0;
+    data.nozzleTime = 0;
+    data.saranaTime = 0;
+    data.tpmTime = 0;
+    data.qualitasTime = 0;
+    data.inspJigTime = 0;
+    data.refillTime = 0;
+    data.jigProsesTime = 0;
+    data.mesinTime = 0;
+    data.qcTrialTime = 0;
+    data.engTrialTime = 0;
+    data.materialHabisTime = 0;
+    data.izinTime = 0;
+    data.ojtTime = 0;
+    data.tambahanTime = 0;
+    data.perawatanTime = 0;
+    data.noPlanTime = 0;
+    data.tungguMaterialTime = 0;
+    saveDataToEEPROM(data);
+    Serial.println("Data direset ke default!");
+    readDataFromEEPROM();
+}
+
+void reconnect() {
+  const char* clientId = "arduinoClient-2WRFD-676";
+  if (client.connect(clientId, "AdminMQTT", "pwd123")) {
+    Serial.println("? Terhubung kembali ke MQTT broker!");
+  } else {
+    Serial.print("? Gagal reconnect. State: ");
+    Serial.println(client.state());
+    delay(3000);
+  }
+}
+
+void publishData() {
+  StaticJsonDocument<896> doc;
+  fillJson(doc);
+
+  size_t estimatedSize = measureJson(doc);
+  Serial.print("?? Ukuran JSON: ");
+  Serial.println(estimatedSize);
+
+  if (client.beginPublish(("SMMS/" + mcID).c_str(), estimatedSize, false)) {
+    serializeJson(doc, client);
+    client.endPublish();
+    Serial.println("? Publish JSON sukses!");
+  } else {
+    Serial.println("? Publish JSON gagal!");
+  }
+
+  Serial.print("?? Free RAM: ");
+  Serial.println(freeMemory());
+}
+
+
+void fillJson(JsonDocument& doc) {
+  /*doc["timestamp"] = timestamp;
+  doc["mcID"] = mcID;
+  doc["mcStatus"] = mcStatus;
+  doc["mcInfo"] = mcInfo;
+  doc["op_NIK"] = data.op_NIK;
+  doc["selectCode"] = data.selectCode;
+  doc["code"] = code;
+  doc["partName"] = partName;
+  doc["partNumber"] = partNumber;
+  doc["partID"] = partID;
+  doc["prosesName"] = prosesName;
+  doc["prosesDesc"] = prosesDesc;
+  doc["cust"] = cust;
+  doc["line"] = line;
+  doc["cavity"] = cavity;
+  */
+  doc["timestamp"] = timestamp;
+  doc["mcID"] = mcID;
+  doc["mcStatus"] = mcStatus;
+  doc["mcInfo"] = mcInfo;
+  doc["codePart"] = codePart;
+  doc["prodCount"] = prodCount;
+  doc["codeNG"] = data.codeNG;
+  doc["NGAdd"] = data.NGAdd;
+  doc["NGMin"] = data.NGMin;
+  doc["mesinOffTime"] = data.mesinOffTime;
+  doc["mesinAlarmTime"] = data.mesinAlarmTime;
+  doc["mesinRunningTime"] = data.mesinRunningTime;
+  doc["standByTime"] = data.standByTime;
+  doc["p5mTime"] = data.p5mTime;
+  doc["p5p5rTime"] = data.p5p5rTime;
+  doc["sholatTime"] = data.sholatTime;
+  doc["toiletTime"] = data.toiletTime;
+  doc["minumTime"] = data.minumTime;
+  doc["teachingTime"] = data.teachingTime;
+  doc["wireLasTime"] = data.wireLasTime;
+  doc["dandoryTime"] = data.dandoryTime;
+  doc["nozzleTime"] = data.nozzleTime;
+  doc["saranaTime"] = data.saranaTime;
+  doc["tpmTime"] = data.tpmTime;
+  doc["qualitasTime"] = data.qualitasTime;
+  doc["inspJigTime"] = data.inspJigTime;
+  doc["refillTime"] = data.refillTime;
+  doc["jigProsesTime"] = data.jigProsesTime;
+  doc["mesinTime"] = data.mesinTime;
+  doc["qcTrialTime"] = data.qcTrialTime;
+  doc["engTrialTime"] = data.engTrialTime;
+  doc["materialHabisTime"] = data.materialHabisTime;
+  doc["izinTime"] = data.izinTime;
+  doc["ojtTime"] = data.ojtTime;
+  doc["tambahanTime"] = data.tambahanTime;
+  doc["perawatanTime"] = data.perawatanTime;
+  doc["noPlanTime"] = data.noPlanTime;
+  doc["tungguMaterialTime"] = data.tungguMaterialTime;
+}
+
+void handleHTTP() {
+  EthernetClient clientHTTP = serverHTTP.available();
+  if (clientHTTP) {
+    Serial.println("?? HTTP client terhubung");
+
+    while (clientHTTP.connected()) {
+      if (clientHTTP.available()) {
+        clientHTTP.readStringUntil('\r'); // Request line
+        clientHTTP.read(); // newline
+
+        StaticJsonDocument<896> doc;
+        fillJson(doc);
+
+        // Header HTTP
+        clientHTTP.println("HTTP/1.1 200 OK");
+        clientHTTP.println("Content-Type: text/html");
+        clientHTTP.println("Connection: close");
+        clientHTTP.println();
+
+        // Kirim HTML stream per bagian
+        clientHTTP.println("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
+        clientHTTP.println("<title>Monitoring Mesin</title>");
+        clientHTTP.println("<style>body{font-family:Arial;}table{border-collapse:collapse;width:100%;}th,td{border:1px solid #ccc;padding:8px;text-align:left;}th{background:#eee;}</style></head><body>");
+        clientHTTP.println("<h2>Status Mesin</h2><table>");
+
+        for (JsonPair kv : doc.as<JsonObject>()) {
+          clientHTTP.print("<tr><th>");
+          clientHTTP.print(kv.key().c_str());
+          clientHTTP.print("</th><td>");
+          clientHTTP.print(kv.value().as<String>());
+          clientHTTP.println("</td></tr>");
+        }
+
+        clientHTTP.println("</table></body></html>");
+        break;
+      }
+    }
+
+    delay(1);
+    clientHTTP.stop();
+    Serial.println("?? HTTP client disconnected");
+  }
+}
