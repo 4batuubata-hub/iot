@@ -6,41 +6,7 @@ $host = "localhost"; $user = "root"; $pass = ""; $db = "simulasi";
 $conn = new mysqli($host, $user, $pass, $db);
 if ($conn->connect_error) die("Koneksi Gagal: " . $conn->connect_error);
 
-// AJAX Handler untuk Update Cavity
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_cavity') {
-    if (!isset($user_role) || $user_role !== 'it') {
-        echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
-        exit;
-    }
-    $id = (int)$_POST['id'];
-    $cav = (int)$_POST['cavity'];
-    $stmt = $conn->prepare("UPDATE master_ct SET cavity = ? WHERE id = ?");
-    $stmt->bind_param("ii", $cav, $id);
-    if ($stmt->execute()) {
-        echo json_encode(['status' => 'success']);
-    } else {
-        echo json_encode(['status' => 'error', 'message' => $conn->error]);
-    }
-    exit;
-}
 
-// AJAX Handler untuk Update Kode Finish
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'update_kode_finish') {
-    if (!isset($user_role) || $user_role !== 'it') {
-        echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
-        exit;
-    }
-    $id = (int)$_POST['id'];
-    $kode_finish = $_POST['kode_finish'];
-    $stmt = $conn->prepare("UPDATE master_ct SET kode_finish = ? WHERE id = ?");
-    $stmt->bind_param("si", $kode_finish, $id);
-    if ($stmt->execute()) {
-        echo json_encode(['status' => 'success']);
-    } else {
-        echo json_encode(['status' => 'error', 'message' => $conn->error]);
-    }
-    exit;
-}
 
 // AJAX Handler untuk Import CSV
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'import_csv') {
@@ -101,6 +67,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     fclose($file);
     echo json_encode(['status' => 'success', 'message' => "Import selesai! Sukses: $success baris. Gagal: $failed baris."]);
+    exit;
+}
+
+// AJAX Handler untuk Edit Product
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'edit_product') {
+    if (!isset($user_role) || $user_role !== 'it') {
+        echo json_encode(['status' => 'error', 'message' => 'Unauthorized']);
+        exit;
+    }
+    $id = (int)$_POST['id'];
+    $kode = $_POST['kode'];
+    
+    // Check duplikat (pastikan kode tidak dipakai oleh id lain)
+    $cek = $conn->prepare("SELECT id FROM master_ct WHERE kode = ? AND id != ?");
+    $cek->bind_param("si", $kode, $id);
+    $cek->execute();
+    if ($cek->get_result()->num_rows > 0) {
+        echo json_encode(['status' => 'error', 'message' => 'Kode Proses sudah digunakan produk lain!']);
+        exit;
+    }
+
+    $kode_finish = $_POST['kode_finish'];
+    $part_name = $_POST['part_name'];
+    $part_number = $_POST['part_number'];
+    $proses_name = $_POST['proses_name'];
+    $proses_description = $_POST['proses_description'];
+    $customer = $_POST['customer'];
+    $line = $_POST['line'];
+    $ct_pcs = (float)$_POST['ct_pcs'];
+    $ct_jam = (float)$_POST['ct_jam'];
+    $cavity = (int)$_POST['cavity'];
+
+    $stmt = $conn->prepare("UPDATE master_ct SET kode=?, kode_finish=?, part_name=?, part_number=?, proses_name=?, proses_description=?, customer=?, line=?, ct_pcs=?, ct_jam=?, cavity=? WHERE id=?");
+    $stmt->bind_param("ssssssssddii", $kode, $kode_finish, $part_name, $part_number, $proses_name, $proses_description, $customer, $line, $ct_pcs, $ct_jam, $cavity, $id);
+    if ($stmt->execute()) {
+        echo json_encode(['status' => 'success']);
+    } else {
+        echo json_encode(['status' => 'error', 'message' => $conn->error]);
+    }
     exit;
 }
 
@@ -174,25 +179,19 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         $order_dir = 'asc';
     }
 
-    $filter_customer = isset($_POST['filter_customer']) ? $_POST['filter_customer'] : '';
-    $filter_line = isset($_POST['filter_line']) ? $_POST['filter_line'] : '';
-    $filter_part = isset($_POST['filter_part']) ? $_POST['filter_part'] : '';
-
     $where = "1=1";
     if (!empty($search)) {
         $search = $conn->real_escape_string($search);
         $where .= " AND (kode LIKE '%$search%' OR kode_finish LIKE '%$search%' OR part_name LIKE '%$search%' OR part_number LIKE '%$search%' OR proses_name LIKE '%$search%' OR customer LIKE '%$search%' OR line LIKE '%$search%')";
     }
-    
-    if (!empty($filter_customer)) {
-        $where .= " AND customer = '" . $conn->real_escape_string($filter_customer) . "'";
-    }
-    if (!empty($filter_line)) {
-        $where .= " AND line = '" . $conn->real_escape_string($filter_line) . "'";
-    }
-    if (!empty($filter_part)) {
-        $val = $conn->real_escape_string($filter_part);
-        $where .= " AND (part_name LIKE '%$val%' OR part_number LIKE '%$val%')";
+
+    for ($i = 0; $i < count($columns); $i++) {
+        $col_search = isset($_POST['columns'][$i]['search']['value']) ? $_POST['columns'][$i]['search']['value'] : '';
+        if (!empty($col_search)) {
+            $col_name = $columns[$i];
+            $col_search_esc = $conn->real_escape_string($col_search);
+            $where .= " AND $col_name LIKE '%$col_search_esc%'";
+        }
     }
 
     $resTotal = $conn->query("SELECT COUNT(id) as total FROM master_ct");
@@ -287,10 +286,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         
         .badge { background: #334155; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; color: #60a5fa;}
         
-        .cavity-input { width: 60px; background: #1e293b; color: white; border: 1px solid var(--border-color); padding: 5px; border-radius: 6px; text-align: center; transition: border-color 0.3s; }
-        .cavity-input:focus { outline: none; border-color: var(--primary); }
-        .kode-finish-input { width: 100px; background: #1e293b; color: white; border: 1px solid var(--border-color); padding: 5px; border-radius: 6px; text-align: center; transition: border-color 0.3s; }
-        .kode-finish-input:focus { outline: none; border-color: var(--primary); }
+
 
         /* MODAL */
         .modal { display: none; position: fixed; z-index: 10000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.8); backdrop-filter: blur(5px); }
@@ -311,18 +307,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         .btn-add { background: var(--primary) !important; color: white !important; margin-left: 10px; }
         .btn-add:hover { background: #2563eb !important; }
 
-        /* FILTER BAR */
-        .filter-bar { background: var(--card-bg); padding: 15px 20px; border-radius: 12px; border: 1px solid var(--border-color); margin-bottom: 15px; display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end; }
-        .filter-item { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 200px; }
-        .filter-item label { font-size: 12px; color: var(--text-muted); font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; }
-        .filter-item select, .filter-item input { background: #1e293b; color: white; border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; outline: none; transition: 0.3s; font-family: inherit; font-size: 14px;}
-        .filter-item select:focus, .filter-item input:focus { border-color: var(--primary); }
-        .filter-actions { display: flex; gap: 10px; flex: 1; min-width: 200px; align-items: flex-end; }
-        .filter-actions button { padding: 10px 15px; border-radius: 6px; font-weight: bold; cursor: pointer; border: none; transition: 0.3s; flex: 1; font-size: 14px;}
-        .btn-apply { background: var(--primary); color: white; }
-        .btn-apply:hover { background: #2563eb; }
-        .btn-clear { background: #334155; color: white; }
-        .btn-clear:hover { background: #475569; }
+        /* COLUMN FILTERS */
+        thead .filters th { padding: 6px 8px; background: #1e293b; border: 1px solid var(--border-color) !important; border-top: none !important; }
+        thead .filters input { width: 100%; box-sizing: border-box; background: #0f172a; color: white; border: 1px solid var(--border-color); padding: 6px 8px; border-radius: 4px; font-size: 12px; font-family: inherit; min-width: 60px; }
+        thead .filters input:focus { outline: none; border-color: var(--primary); }
+        thead .filters input::placeholder { color: #64748b; }
     </style>
 </head>
 <body>
@@ -361,38 +350,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         <h1>DAFTAR MASTER CYCLE TIME (CT)</h1>
     </div>
 
-    <?php
-    $qCust = $conn->query("SELECT DISTINCT customer FROM master_ct WHERE customer != '' ORDER BY customer ASC");
-    $qLine = $conn->query("SELECT DISTINCT line FROM master_ct WHERE line != '' ORDER BY line ASC");
-    ?>
-    <div class="filter-bar">
-        <div class="filter-item">
-            <label>Customer</label>
-            <select id="filter_customer">
-                <option value="">-- Semua Customer --</option>
-                <?php while($c = $qCust->fetch_assoc()): ?>
-                    <option value="<?= htmlspecialchars($c['customer']) ?>"><?= htmlspecialchars($c['customer']) ?></option>
-                <?php endwhile; ?>
-            </select>
-        </div>
-        <div class="filter-item">
-            <label>Line</label>
-            <select id="filter_line">
-                <option value="">-- Semua Line --</option>
-                <?php while($l = $qLine->fetch_assoc()): ?>
-                    <option value="<?= htmlspecialchars($l['line']) ?>"><?= htmlspecialchars($l['line']) ?></option>
-                <?php endwhile; ?>
-            </select>
-        </div>
-        <div class="filter-item">
-            <label>Nama / No. Part</label>
-            <input type="text" id="filter_part" placeholder="Ketik kata kunci...">
-        </div>
-        <div class="filter-actions">
-            <button class="btn-apply" onclick="applyFilters()">🔍 Terapkan</button>
-            <button class="btn-clear" onclick="resetFilters()">✖ Reset</button>
-        </div>
-    </div>
+
 
     <div class="table-container">
         <table id="ctTable" class="display nowrap" style="width:100%">
@@ -410,9 +368,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                     <th>CT (Pcs)</th>
                     <th>CT (Jam)</th>
                     <th>CAVITY</th>
+                    <?php if (isset($user_role) && $user_role === 'it'): ?>
+                    <th>AKSI</th>
+                    <?php endif; ?>
                 </tr>
             </thead>
-            <tbody>
             <tbody>
             </tbody>
         </table>
@@ -504,6 +464,72 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         </div>
     </div>
 
+    <!-- Edit Product Modal -->
+    <div id="editProductModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>✏️ Edit Produk Master CT</h3>
+                <span class="close-modal" onclick="closeEditModal()">&times;</span>
+            </div>
+            <form id="editProductForm">
+                <input type="hidden" id="edit_id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Kode Proses *</label>
+                        <input type="text" id="edit_kode" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Kode Finish</label>
+                        <input type="text" id="edit_kode_finish">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Part Name *</label>
+                        <input type="text" id="edit_part_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Part Number *</label>
+                        <input type="text" id="edit_part_number" required>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Proses Name *</label>
+                        <input type="text" id="edit_proses_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Line</label>
+                        <input type="text" id="edit_line">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Deskripsi Proses</label>
+                    <textarea id="edit_proses_description" rows="2"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Customer</label>
+                    <input type="text" id="edit_customer">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>CT Pcs (Detik) *</label>
+                        <input type="number" id="edit_ct_pcs" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>CT Jam (Pcs/Jam) *</label>
+                        <input type="number" id="edit_ct_jam" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Cavity *</label>
+                        <input type="number" id="edit_cavity" required>
+                    </div>
+                </div>
+                <button type="submit" class="btn-submit">💾 Simpan Perubahan</button>
+            </form>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
     <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
@@ -539,7 +565,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
             });
             <?php endif; ?>
 
+            // Add a secondary header row for filters
+            $('#ctTable thead tr').clone(true).addClass('filters').appendTo('#ctTable thead');
+
             $('#ctTable').DataTable({
+                orderCellsTop: true,
                 dom: 'Bfrtip',
                 buttons: buttonsConfig,
                 pageLength: 50,
@@ -548,12 +578,34 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                 serverSide: true,
                 ajax: {
                     url: 'master_ct.php?ajax=1&action=get_master_ct',
-                    type: 'POST',
-                    data: function(d) {
-                        d.filter_customer = $('#filter_customer').val();
-                        d.filter_line = $('#filter_line').val();
-                        d.filter_part = $('#filter_part').val();
-                    }
+                    type: 'POST'
+                },
+                initComplete: function () {
+                    var api = this.api();
+                    var searchDelay = null;
+
+                    api.columns().eq(0).each(function (colIdx) {
+                        var cell = $('.filters th').eq($(api.column(colIdx).header()).index());
+                        var title = $(cell).text();
+                        
+                        // Disable filter on 'NO' column (index 0) or empty headers
+                        if (colIdx === 0 || !title.trim()) {
+                            $(cell).html('');
+                            return;
+                        }
+                        
+                        $(cell).html('<input type="text" placeholder="' + title + '" />');
+                        
+                        $('input', cell).off('keyup change').on('keyup', function (e) {
+                            var val = this.value;
+                            if (searchDelay) clearTimeout(searchDelay);
+                            searchDelay = setTimeout(function() {
+                                if (api.column(colIdx).search() !== val) {
+                                    api.column(colIdx).search(val).draw();
+                                }
+                            }, 300);
+                        });
+                    });
                 },
                 columns: [
                     { data: 'no', orderable: false },
@@ -567,11 +619,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                         data: 'kode_finish',
                         render: function(data, type, row) {
                             var safeData = data ? data.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;") : '';
-                            if (row.is_it_role) {
-                                return '<div style="text-align:center;"><input type="text" class="kode-finish-input" data-id="'+row.id+'" value="'+safeData+'" placeholder="Kosong"></div>';
-                            } else {
-                                return '<div style="text-align:center;"><span class="badge" style="background:#0f172a; border: 1px solid #334155; color: #cbd5e1;">'+(safeData||'-')+'</span></div>';
-                            }
+                            return '<div style="text-align:center;"><span class="badge" style="background:#0f172a; border: 1px solid #334155; color: #cbd5e1;">'+(safeData||'-')+'</span></div>';
                         }
                     },
                     { 
@@ -600,73 +648,22 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                     {
                         data: 'cavity',
                         render: function(data, type, row) {
-                            if (row.is_it_role) {
-                                return '<div style="text-align:center;"><input type="number" class="cavity-input" data-id="'+row.id+'" value="'+data+'" min="1"></div>';
-                            } else {
-                                return '<div style="text-align:center;">' + data + '</div>';
-                            }
+                            return '<div style="text-align:center;">' + data + '</div>';
                         }
                     }
+                    <?php if (isset($user_role) && $user_role === 'it'): ?>
+                    ,{
+                        data: null,
+                        orderable: false,
+                        render: function(data, type, row) {
+                            var rowData = encodeURIComponent(JSON.stringify(row));
+                            return '<div style="text-align:center;"><button class="btn-edit" data-row="'+rowData+'" style="background:#f59e0b; color:white; border:none; padding:6px 12px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:12px;">✏️ Edit</button></div>';
+                        }
+                    }
+                    <?php endif; ?>
                 ]
             });
 
-            // Update Cavity
-            $(document).on('change', '.cavity-input', function() {
-                var input = $(this);
-                var id = input.data('id');
-                var val = input.val();
-                
-                $.ajax({
-                    url: 'master_ct.php',
-                    type: 'POST',
-                    data: { action: 'update_cavity', id: id, cavity: val },
-                    success: function(res) {
-                        try {
-                            var data = JSON.parse(res);
-                            if(data.status === 'success') {
-                                input.css('border-color', '#10b981'); // Green success flash
-                                setTimeout(function(){ input.css('border-color', '#334155'); }, 1500);
-                            } else {
-                                alert('Gagal update: ' + data.message);
-                            }
-                        } catch (e) {
-                            alert('Respons server tidak valid.');
-                        }
-                    },
-                    error: function() {
-                        alert('Terjadi kesalahan jaringan.');
-                    }
-                });
-            });
-
-            // Update Kode Finish
-            $(document).on('change', '.kode-finish-input', function() {
-                var input = $(this);
-                var id = input.data('id');
-                var val = input.val();
-                
-                $.ajax({
-                    url: 'master_ct.php',
-                    type: 'POST',
-                    data: { action: 'update_kode_finish', id: id, kode_finish: val },
-                    success: function(res) {
-                        try {
-                            var data = JSON.parse(res);
-                            if(data.status === 'success') {
-                                input.css('border-color', '#10b981'); 
-                                setTimeout(function(){ input.css('border-color', '#334155'); }, 1500);
-                            } else {
-                                alert('Gagal update: ' + data.message);
-                            }
-                        } catch (e) {
-                            alert('Respons server tidak valid.');
-                        }
-                    },
-                    error: function() {
-                        alert('Terjadi kesalahan jaringan.');
-                    }
-                });
-            });
 
             // Modal Logic
             window.closeModal = function() {
@@ -677,6 +674,10 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                 $('#importCsvModal').css('display', 'none');
                 $('#importCsvForm')[0].reset();
             }
+            window.closeEditModal = function() {
+                $('#editProductModal').css('display', 'none');
+                $('#editProductForm')[0].reset();
+            }
 
             // Close when clicking outside modal
             $(window).click(function(e) {
@@ -686,6 +687,73 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                 if ($(e.target).is('#importCsvModal')) {
                     closeImportModal();
                 }
+                if ($(e.target).is('#editProductModal')) {
+                    closeEditModal();
+                }
+            });
+
+            // Handle Edit Button Click
+            $(document).on('click', '.btn-edit', function() {
+                var rowData = JSON.parse(decodeURIComponent($(this).attr('data-row')));
+                $('#edit_id').val(rowData.id);
+                $('#edit_kode').val(rowData.kode);
+                $('#edit_kode_finish').val(rowData.kode_finish);
+                $('#edit_part_name').val(rowData.part_name);
+                $('#edit_part_number').val(rowData.part_number);
+                $('#edit_proses_name').val(rowData.proses_name);
+                $('#edit_line').val(rowData.line);
+                $('#edit_proses_description').val(rowData.proses_description);
+                $('#edit_customer').val(rowData.customer);
+                $('#edit_ct_pcs').val(rowData.ct_pcs);
+                $('#edit_ct_jam').val(rowData.ct_jam);
+                $('#edit_cavity').val(rowData.cavity);
+                $('#editProductModal').css('display', 'block');
+            });
+
+            // Submit Form Edit Product
+            $('#editProductForm').submit(function(e) {
+                e.preventDefault();
+                var btn = $(this).find('button[type="submit"]');
+                btn.prop('disabled', true).text('⏳ Menyimpan...');
+                var data = {
+                    action: 'edit_product',
+                    id: $('#edit_id').val(),
+                    kode: $('#edit_kode').val(),
+                    kode_finish: $('#edit_kode_finish').val(),
+                    part_name: $('#edit_part_name').val(),
+                    part_number: $('#edit_part_number').val(),
+                    proses_name: $('#edit_proses_name').val(),
+                    line: $('#edit_line').val(),
+                    proses_description: $('#edit_proses_description').val(),
+                    customer: $('#edit_customer').val(),
+                    ct_pcs: $('#edit_ct_pcs').val(),
+                    ct_jam: $('#edit_ct_jam').val(),
+                    cavity: $('#edit_cavity').val()
+                };
+
+                $.ajax({
+                    url: 'master_ct.php',
+                    type: 'POST',
+                    data: data,
+                    success: function(res) {
+                        try {
+                            var json = JSON.parse(res);
+                            if(json.status === 'success') {
+                                closeEditModal();
+                                $('#ctTable').DataTable().ajax.reload(null, false); // Reload without resetting pagination
+                            } else {
+                                alert('Gagal: ' + json.message);
+                            }
+                        } catch (e) {
+                            alert('Respons server tidak valid.');
+                        }
+                        btn.prop('disabled', false).text('💾 Simpan Perubahan');
+                    },
+                    error: function() {
+                        alert('Terjadi kesalahan jaringan.');
+                        btn.prop('disabled', false).text('💾 Simpan Perubahan');
+                    }
+                });
             });
 
             // Submit Form Import CSV
@@ -766,16 +834,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
                 });
             });
 
-            window.applyFilters = function() {
-                $('#ctTable').DataTable().ajax.reload();
-            };
-            
-            window.resetFilters = function() {
-                $('#filter_customer').val('');
-                $('#filter_line').val('');
-                $('#filter_part').val('');
-                $('#ctTable').DataTable().search('').ajax.reload();
-            };
         });
     </script>
 </body>
