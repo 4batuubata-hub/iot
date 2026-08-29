@@ -33,9 +33,9 @@ Buka port untuk Web, MySQL, Node-RED, dan MQTT agar bisa diakses dari luar. Jala
 Kloning repository project ke folder `htdocs` XAMPP:
 `git clone https://github.com/4batuubata-hub/iot C:\xampp\htdocs\iot`
 
-**Langkah 7: Import Database**
-Setelah MySQL berjalan, import struktur database awal (asumsikan ada file `.sql` di repository, sesuaikan jika lokasinya berbeda):
-`C:\xampp\mysql\bin\mysql.exe -u root -e "CREATE DATABASE IF NOT EXISTS iot;"`
+**Langkah 7: Konfigurasi Tambahan MySQL & Import Database**
+Setelah MySQL berjalan, setel zona waktu global MySQL ke Jakarta (WIB) dan buat database awal (asumsikan nama database `simulasi`):
+`C:\xampp\mysql\bin\mysql.exe -u root -e "SET GLOBAL time_zone = '+07:00'; CREATE DATABASE IF NOT EXISTS simulasi;"`
 
 **Langkah 8: Install & Jalankan Node-RED**
 1. Install Node-RED secara global:
