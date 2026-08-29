@@ -59,6 +59,21 @@ Sistem terdiri dari dua bagian utama:
 
 ---
 
+## 🎯 Fitur Khusus: Smart Break (Target-Aware Loss Time)
+
+Sistem OEE CNC dilengkapi dengan algoritma toleransi istirahat otomatis yang menjamin keadilan perhitungan performa (OEE) bagi operator yang bekerja cepat. 
+
+- **Masalah:** Operator yang berhasil menyelesaikan target harian lebih cepat (atau dalam *bucket* jam fleksibel/overlap) sering kali dihukum oleh OEE jika mesin mereka berstatus `Stand By` atau `Mesin Off` di sisa waktu luang mereka.
+- **Solusi Smart Break:** Sistem akan mengevaluasi pencapaian Aktual vs Target di setiap jam. Jika di suatu jam **Aktual $\ge$ Target**, maka sistem akan secara otomatis **menganulir (menghapus)** status-status *downtime* yang bersifat personal/istirahat dari perhitungan *Loss Time* dan *Pareto Chart*.
+- **Daftar Putih (Whitelist) Status yang Dimaafkan:**
+  1. `Stand By`
+  2. `Mesin Off`
+  3. `Toilet`, `Minum`, `Sholat`
+- **Dampak pada OEE:** Karena *Loss Time* personal dianulir saat target tercapai, nilai **Availability** akan tetap 100%. Waktu Operasi (*Operating Time*) tetap utuh, sehingga nilai **Performance** operator bisa meroket secara proporsional hingga di atas 100% (contoh: 115%, 145%) sesuai dengan rasio kecepatan kerja mereka yang melampaui standar *Cycle Time*. 
+- **Catatan Penting:** Kerusakan mesin (`Alarm`, `Problem Mesin`, dll) **TETAP DICATAT** sebagai *Loss Time* mutlak, terlepas dari target tercapai atau tidak, agar tetap masuk laporan Maintenance.
+
+---
+
 ## 🛠️ Konfigurasi Tambahan
 
 - **Database**: `koneksi.php`
