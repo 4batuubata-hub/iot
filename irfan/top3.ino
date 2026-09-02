@@ -13,7 +13,7 @@
  *    - RTC DS3231 I2C
  *    - Arduino Nano (I2C Slave Address 8, Counter)
  *    - 25 Tombol Downtime Fisik
- *    - Interlock Relay (Pin A13)
+ *    - Interlock Relay (Pin A9)
  *
  *  MQTT Topics:
  *    PUB -> SMMS/Request/Setup, SMMS/Request/Login,
@@ -91,7 +91,7 @@ char timestamp[30]; // Buffer timestamp format ISO
 #define alarmPin     A2    // Input: Alarm mesin (HIGH = Alarm aktif)
 
 // --- Output Interlock ---
-#define interlockPin A9    // OUTPUT: Relay Interlock Mesin (HIGH = Kunci/Stop)
+#define interlockPin A9   // OUTPUT: Relay Interlock Mesin (HIGH = Kunci/Stop)
 
 // --- Tombol Navigasi (Biru pada panel) ---
 #define btnCTRL      30    // Tombol CTRL (kombinasi untuk setup/reconnect)
@@ -172,7 +172,8 @@ enum SystemState {
   MAIN_SCREEN,
   INFO_SCREEN,
   INPUT_NG_QTY,
-  INPUT_NG_CODE
+  INPUT_NG_CODE,
+  REVIEW_PART_SCREEN
 };
 SystemState currentState = BOOT;
 
@@ -206,6 +207,22 @@ int OKCount   = 0;   // OK = prodCount - NGCount
 unsigned int cycleCountSaved    = 0;  // Offset Nano
 unsigned int cycleCountReceived = 0;  // Counter dari Nano
 int cavity = 1;              // Cavity (default 1, bisa diubah dari proses)
+
+// --- Multi-Model EEPROM Slots ---
+#define MAX_SLOTS 10
+#define EEPROM_SLOTS_START_ADDR 100
+
+struct PartSlot {
+  char partID[21];   // Nama part (20 char + null)
+  char partNo[21];   // No part (20 char + null)
+  unsigned int okCount;
+  unsigned int ngCount;
+  unsigned int repairCount;
+};
+
+int active_slot_index = -1; // -1 = belum ada slot aktif
+PartSlot currentSlotData;
+int review_slot_index = 0;
 
 // --- NG / Repair Input ---
 bool   isRepairMode = false;  // false = Tambah NG (NG+), true = Repair (NG-)
@@ -674,7 +691,53 @@ void loop() {
         lcd.setCursor(0, 3); lcd.print(F("D:Lanjut  C:Batal"));
         forceUpdate = false;
       }
-      if (key == 'D') changeState(LOGIN_NIK);
+      if (key == 'D') {
+        // --- SMART ACCUMULATION LOGIC ---
+        if (active_slot_index != -1) {
+            currentSlotData.okCount = OKCount;
+            currentSlotData.ngCount = NGCount;
+            writeSlotToEEPROM(active_slot_index, currentSlotData);
+        }
+        
+        bool found = false;
+        PartSlot tempSlot;
+        int firstEmptySlot = -1;
+        
+        for (int i=0; i<MAX_SLOTS; i++) {
+            readSlotFromEEPROM(i, &tempSlot);
+            if (String(tempSlot.partNo) == partNo) {
+                active_slot_index = i;
+                currentSlotData = tempSlot;
+                found = true;
+                break;
+            }
+            if (firstEmptySlot == -1 && (tempSlot.partNo[0] == '\0' || tempSlot.partNo[0] == (char)0xFF)) {
+                firstEmptySlot = i;
+            }
+        }
+        
+        if (!found) {
+            active_slot_index = (firstEmptySlot != -1) ? firstEmptySlot : 0;
+            memset(&currentSlotData, 0, sizeof(PartSlot));
+            partID.toCharArray(currentSlotData.partID, 21);
+            partNo.toCharArray(currentSlotData.partNo, 21);
+            writeSlotToEEPROM(active_slot_index, currentSlotData);
+        }
+        
+        // Sync counters
+        unsigned int targetProd = currentSlotData.okCount + currentSlotData.ngCount;
+        unsigned int rawCounter = cycleCountReceived;
+        
+        // Menghindari underflow jika rawCounter * cavity > targetProd
+        int savedOffset = (targetProd / cavity) - rawCounter;
+        cycleCountSaved = savedOffset;
+        
+        prodCount = targetProd;
+        OKCount = currentSlotData.okCount;
+        NGCount = currentSlotData.ngCount;
+        
+        changeState(LOGIN_NIK);
+      }
       else if (key == 'C') changeState(INPUT_PROCESS);
       break;
 
@@ -755,8 +818,37 @@ void loop() {
       if (key == 'B') changeState(INPUT_PROCESS);  // Ganti Proses
       else if (key == '*') changeState(INFO_SCREEN); // Info Screen
 
+      // Navigasi Tombol Fisik
+      if (digitalRead(btnCTRL) == LOW) {
+         review_slot_index = (active_slot_index == -1) ? 0 : active_slot_index;
+         changeState(REVIEW_PART_SCREEN);
+         delay(300); // Debounce sederhana
+      }
+
       // Update tampilan LCD (scrolling text)
       processMainScreen();
+      break;
+
+    // -------------------- REVIEW PART SCREEN --------------------
+    case REVIEW_PART_SCREEN:
+      processReviewScreen();
+      
+      if (digitalRead(btnPROG_PLUS) == LOW) {
+         review_slot_index++;
+         if (review_slot_index >= MAX_SLOTS) review_slot_index = 0;
+         forceUpdate = true;
+         delay(300); // Debounce
+      }
+      else if (digitalRead(btnPROG_MINUS) == LOW) {
+         review_slot_index--;
+         if (review_slot_index < 0) review_slot_index = MAX_SLOTS - 1;
+         forceUpdate = true;
+         delay(300);
+      }
+      else if (digitalRead(btnCTRL) == LOW) {
+         changeState(MAIN_SCREEN);
+         delay(300);
+      }
       break;
 
     // -------------------- INFO SCREEN --------------------
@@ -926,6 +1018,15 @@ void loop() {
       unsigned int cycleCount = cycleCountSaved + cycleCountReceived;
       prodCount = cycleCount * cavity;
       OKCount = prodCount - NGCount;
+
+      // --- AUTO-SAVE EEPROM ---
+      if (active_slot_index != -1) {
+          if (OKCount != currentSlotData.okCount || NGCount != currentSlotData.ngCount) {
+              currentSlotData.okCount = OKCount;
+              currentSlotData.ngCount = NGCount;
+              writeSlotToEEPROM(active_slot_index, currentSlotData);
+          }
+      }
 
       Serial.print(F(" | Prod LCD: "));
       Serial.println(prodCount);
@@ -1190,6 +1291,15 @@ void readNGButtons() {
       }
       activeNgCount = 0;
 
+      // Reset EEPROM Part Slots
+      PartSlot emptySlot;
+      memset(&emptySlot, 0, sizeof(PartSlot));
+      for (int i = 0; i < MAX_SLOTS; i++) {
+        writeSlotToEEPROM(i, emptySlot);
+      }
+      active_slot_index = -1;
+      memset(&currentSlotData, 0, sizeof(PartSlot));
+
       lcd.clear();
       lcd.setCursor(2, 1); lcd.print(F("COUNTER DIRESET!"));
       lcd.setCursor(2, 2); lcd.print(F("Prod/NG/OK = 0"));
@@ -1293,6 +1403,47 @@ String checkDowntimeButton() {
   if (digitalRead(pbWireLas) == LOW)            return "Wire Las Macet";
   if (digitalRead(pbTambahanProses) == LOW)     return "Tambahan Proses";
   return "";  // Tidak ada tombol yang ditekan
+}
+
+// =====================================================================
+//              FUNGSI LAYAR REVIEW PART (MULTI-MODEL)
+// =====================================================================
+void processReviewScreen() {
+  if (forceUpdate) {
+    lcd.clear();
+    lcd.noBlink();
+    
+    PartSlot reviewData;
+    readSlotFromEEPROM(review_slot_index, &reviewData);
+    
+    // Baris 0: Header
+    lcd.setCursor(0, 0);
+    lcd.print(F("SHIFT DATA   <("));
+    lcd.print(review_slot_index + 1);
+    lcd.print(F("/10)>"));
+    
+    // Baris 1: partID
+    String rPartID = String(reviewData.partID);
+    if (rPartID.length() == 0 || reviewData.partID[0] == (char)0xFF) rPartID = "-Kosong-";
+    lcd.setCursor(0, 1);
+    lcd.print(rPartID.substring(0, 20));
+    
+    // Baris 2: partNo
+    String rPartNo = String(reviewData.partNo);
+    if (rPartNo.length() == 0 || reviewData.partNo[0] == (char)0xFF) rPartNo = "-Kosong-";
+    lcd.setCursor(0, 2);
+    lcd.print(rPartNo.substring(0, 20));
+    
+    // Baris 3: OK/NG/Repair
+    lcd.setCursor(0, 3);
+    if (rPartID == "-Kosong-") {
+      lcd.print(F("OK:- NG:- R:-       "));
+    } else {
+      String statStr = "OK:" + String(reviewData.okCount) + " NG:" + String(reviewData.ngCount) + " R:" + String(reviewData.repairCount);
+      lcd.print(statStr.substring(0, 20));
+    }
+    forceUpdate = false;
+  }
 }
 
 // =====================================================================
@@ -1524,6 +1675,27 @@ byte readByteFromEEPROM(int addr) {
   Wire.endTransmission();
   Wire.requestFrom(EEPROM_ADDRESS, 1);
   return Wire.available() ? Wire.read() : 0xFF;
+}
+
+// =====================================================================
+//                 MULTI-MODEL EEPROM SLOT HELPERS
+// =====================================================================
+void writeSlotToEEPROM(int slotIndex, PartSlot data) {
+  int addr = EEPROM_SLOTS_START_ADDR + (slotIndex * sizeof(PartSlot));
+  byte* ptr = (byte*)&data;
+  for (unsigned int i = 0; i < sizeof(PartSlot); i++) {
+    if (readByteFromEEPROM(addr + i) != ptr[i]) {
+      writeByteToEEPROM(addr + i, ptr[i]);
+    }
+  }
+}
+
+void readSlotFromEEPROM(int slotIndex, PartSlot* data) {
+  int addr = EEPROM_SLOTS_START_ADDR + (slotIndex * sizeof(PartSlot));
+  byte* ptr = (byte*)data;
+  for (unsigned int i = 0; i < sizeof(PartSlot); i++) {
+    ptr[i] = readByteFromEEPROM(addr + i);
+  }
 }
 
 // =====================================================================

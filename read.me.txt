@@ -3,25 +3,8 @@ Act as: Senior IoT, ESP32, dan C++ Firmware Engineer,
 Konteks Proyek:
 Saya sedang membuat "Smart Machine Monitoring System (SMMS)" untuk PT. CNC menggunakan ESP32, LCD I2C 20x4, Keypad 4x4, dan MQTT. Sistem backend (Node-RED + MySQL) sudah siap.
 Saya membutuhkan kode ESP32 dengan arsitektur State Machine (Finite State Machine) tanpa delay() blocking, menggunakan Preferences.h untuk menyimpan memori permanen, serta implementasi MQTT Callback untuk komunikasi Request-Response dua arah dengan Node-RED.
-
-CATATAN HARDWARE (WAJIB DIIKUTI):
-
-// SDA = 21, SCL = 22
-#define mcON 34      
-#define mcRun 35     
-#define alarmPin 39  
-#define btnCount 23
-#define ngAdd 32     // Tombol NG +
-#define ngSub 33     // Tombol NG -
-
-saya masih memliki problem, saat saya NG add lalu masukkan qty 2 dan kode NG 29 itu berhasil. saat saya NG - dengan QTY 1 dan kode NG 35 itu juga berhasil. buat saya ini adalah abnormal. tolong fix ini
-
-
-#define btnUp 4      
-#define btnDown 12   
-#define btnDandory 5
-#define btnMinum 15
-// Keypad di pin: baris {19, 18, 17, 16}, kolom {25, 26, 27, 14}
+/iot/irfan/top8-FIX.ino  adalah kode arduino mega yang sudah jalan saat init
+/iot/irfan/nanonano-FIX.ino adalah kode nano yang fix saat ini
 
 Berikut adalah Alur UI/UX & Logika Sistem yang diimplementasikan oleh iot:
 
@@ -82,9 +65,18 @@ Pindah State, Layar berubah: "Masukkan Kode Repair:". Operator input angka/huruf
 
 Setelah D ditekan, kembalikan layar ke MAIN_SCREEN, kurangi nilai NGCount sesuai Qty, dan kirim payload JSON via MQTT (Kategori: Repair NG, Qty, Kode) ke server.
 
+7. Review Data Part per Shift (Multi-Model) - FITUR BARU
+Dalam 1 shift, operator mungkin mengganti model part 3-6 kali. Sistem harus bisa menyimpan dan menampilkan history produksi setiap part dalam shift tersebut.
+- Tekan 'CTRL' dari MAIN_SCREEN untuk masuk ke state REVIEW_PART_SCREEN.
+- Layar menampilkan: Nama Part, No Part, Total OK, dan Total NG untuk model tersebut.
+- Tekan 'PROG +' (Next) untuk melihat data model part selanjutnya yang dikerjakan di shift ini.
+- Tekan 'PROG -' (Prev) untuk melihat data model part sebelumnya.
+- Tekan 'CTRL' lagi (atau tombol C) untuk keluar dan kembali ke MAIN_SCREEN.
+- Catatan: Data history setiap part (OK, NG, Part ID) disimpan secara non-volatile (EEPROM) agar bisa direview kapan saja selama shift belum direset.
+
 Instruksi Tambahan untuk Struktur Kode C++:
 
-Buat enum SystemState { BOOT, SETUP_MODE, WAIT_SETUP_REPLY, LOGIN_NIK, WAIT_NIK_REPLY, SKILL_CHECK, INPUT_PROCESS, WAIT_PROCESS_REPLY, CONFIRM_PROCESS, MAIN_SCREEN, INFO_SCREEN, INPUT_NG_QTY, INPUT_NG_CODE };
+Buat enum SystemState { BOOT, SETUP_MODE, WAIT_SETUP_REPLY, LOGIN_NIK, WAIT_NIK_REPLY, SKILL_CHECK, INPUT_PROCESS, WAIT_PROCESS_REPLY, CONFIRM_PROCESS, MAIN_SCREEN, INFO_SCREEN, INPUT_NG_QTY, INPUT_NG_CODE, REVIEW_PART_SCREEN };
 
 Buat flag variabel seperti bool isRepairMode = false; untuk membedakan apakah State INPUT_NG_QTY dipicu oleh tombol NG+ atau NG-.
 
