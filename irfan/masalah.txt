@@ -1,0 +1,126 @@
+================================================================================
+LAPORAN INVESTIGASI MASALAH DAN DAFTAR PERBAIKAN SISTEM IOT OEE PT CNC
+Folder: irfan/masalah.txt
+Tanggal: 04 September 2026
+================================================================================
+
+--------------------------------------------------------------------------------
+BAGIAN 1: DAFTAR MASALAH YANG DITEMUKAN (ROOT CAUSES)
+--------------------------------------------------------------------------------
+
+1. Anomali Lonjakan Total Produksi (Hingga 175.328 Pcs)
+   - Masalah: Pada pengujian trial mesin Welding Spot (2 WS35 - 020), counter produksi
+     melonjak drastis hingga ratusan ribu pcs dalam satu shift.
+   - Penyebab:
+     a. Komunikasi I2C antara Arduino Nano (counter hardware) dan Arduino Mega/ESP32
+        mengalami glitch/noise floating bus ketika kabel pulsa terganggu atau mesin mati.
+        Saat bus floating/lost ACK, data byte yang terbaca menjadi 0xFFFF (65.535)
+        atau 0x7FFF (32.767).
+     b. Tipe data counter di firmware sebelumnya menggunakan int16 bertanda (signed int).
+        Ketika pulsa mencapai 32.768, angka berbalik menjadi negatif (-32.768) atau
+        terbaca acak, yang memicu lonjakan kalkulasi selisih (delta) di server.
+     c. Algoritma "Anti-Drop" lama di PHP: ketika nilai counter turun (akibat reset atau
+        glitch), sistem langsung menambahkan seluruh counter baru ke total tanpa memvalidasi
+        apakah angka tersebut masuk akal secara fisik (kapasitas mekanikal mesin).
+
+2. Losstime Mesin Membengkak hingga 12.383 Menit (~8,6 Hari)
+   - Masalah: Tampilan downtime / losstime mesin mencapai 12.383 menit.
+   - Penyebab: Sistem IoT dibiarkan menyala dan beroperasi terus-menerus selama 8,6 hari
+     (dari 26 Agustus 2026 s/d 04 September 2026) tanpa dilakukan eksekusi "Reset Shift".
+     Akibatnya, seluruh durasi off/standby selama berhari-hari terakumulasi ke dalam
+     satu record shift kerja yang sama.
+
+3. Masalah Integrasi Multiplier Cavity Mesin
+   - Masalah: Perhitungan output harus mempertimbangkan cetakan cavity mesin (misal
+     1 stroke menghasilkan 2, 4, atau 8 pcs part).
+   - Catatan Desain: Hardware IoT hanya menghitung pulsa fisik / stroke mesin (1 stroke = 1 pulsa).
+     Cavity dikelola pada tingkat database (tabel master_ct). Sebelumnya, proteksi
+     delta di PHP tidak memperhitungkan pengali cavity, sehingga part dengan cavity > 1
+     berisiko terpotong oleh filter batas stroke jika tidak disesuaikan.
+
+4. Bug Dangling Reference pada PHP Array Loop
+   - Masalah: Pada dekidaka tabel hourly, data baris terakhir sering terduplikasi atau
+     nilainya tertimpa oleh baris di atasnya.
+   - Penyebab: Penggunaan referensi pointer PHP (&$data, &$partData) tanpa pemanggilan
+     unset() setelah foreach selesai. Referensi variabel terakhir tetap menempel
+     di memori dan mengubah elemen array terakhir pada iterasi berikutnya.
+
+5. Gagal Membaca Arsip History (history/index.php & history/detail.php)
+   - Masalah: Halaman user/history/index.php dan user/history/detail.php gagal membaca data,
+     halaman loading tanpa henti (timeout 30 detik), atau menampilkan "Tidak ada data history".
+   - Penyebab di index.php:
+     a. Filter tanggal terkunci kaku pada hs.tanggal = '$filterTanggal' (default tanggal terbaru).
+        Tidak ada opsi "Semua Tanggal". Saat operator memfilter mesin tertentu yang berjalan
+        pada tanggal sebelumnya (contoh: 2 PR45 - 032 pada 20-08-2026), hasil query langsung
+        kosong (0 data).
+     b. Relasi SQL: LEFT JOIN master_mesin mm ON hs.mcID = mm.mcID gagal karena mm.mcID
+        bertipe numerik (contoh: 3024), sedangkan hs.mcID menyimpan kode string (contoh: '2 WS35 - 020').
+     c. Baris pencarian nama part terakhir di index.php mengambil dari tabel log_quality
+        (tabel live yang sudah dikosongkan setelah reset shift), bukan dari history_quality.
+   - Penyebab di detail.php:
+     a. Record uji coba 8,6 hari menghasilkan 212.272 baris di history_quality.
+        Query detail.php menjalankan LEFT JOIN master_ct pada 212.272 baris dan memproses
+        strtotime() serta explode() di dalam perulangan PHP sebanyak jutaan kali.
+        Hal ini memakan waktu > 34 detik, melebihi max_execution_time PHP (30 detik),
+        sehingga server langsung memutus koneksi (Fatal Error / Gateway Timeout).
+     b. detail.php tidak mengenali parameter id summary (hanya membaca mcID dan tanggal).
+
+
+--------------------------------------------------------------------------------
+BAGIAN 2: DAFTAR PERBAIKAN YANG TELAH DILAKUKAN (SOLUSI IMPLEMENTASI)
+--------------------------------------------------------------------------------
+
+1. Pembaruan Firmware Arduino (irfan/top8-FIX.ino)
+   - Tipe data counter diupgrade menjadi 32-bit unsigned long (0 s/d 4.294.967.295).
+   - Filter Noise I2C: Menolak pembacaan bernilai 0xFFFF (65.535) atau 0x7FFF (32.767).
+   - Validasi Reboot: Reset counter hanya diakui sah jika nilai mentah <= 5 dan bertahan
+     stabil minimal selama 2 siklus pembacaan berturut-turut.
+   - Mechanical Limit: Perubahan pulsa dibatasi maksimal delta <= 50 pulsa/detik.
+
+2. Proteksi Database & SQL Trigger (trigger.sql)
+   - Trigger before_log_quality_insert:
+     * Menghitung delta pulsa murni (stroke) secara otomatis.
+     * Mengalikan stroke dengan nilai cavity dari master_ct secara real-time saat insert.
+     * Mengabaikan lonjakan pulsa abnormal yang melebihi batas fisik mesin.
+     * Menyimpan nilai pulsa asli ke kolom raw_prodCount untuk audit jejak data.
+   - Penambahan Covering Index:
+     * Menambahkan composite index idx_history_fast (mcID, timestamp, prodCount, kode_proses)
+       pada tabel history_quality (diterapkan pada database simulasi dan simulasi_real).
+
+3. Optimalisasi Logika Dashboard Live (detail.php, user/detail.php, proses_reset.php)
+   - Menyelaraskan batas delta proteksi PHP dengan cavity: max_delta = 50 * cavity.
+   - Mengurutkan jam dekidaka secara kronologis berdasarkan jam mulai shift (Shift 2: 16:00 -> 00:00).
+   - Membersihkan pointer referensi PHP dengan unset($data) dan unset($partData).
+   - Memastikan rumus Total Produksi konsisten: Total OK + Total NG.
+
+4. Perbaikan & Akselerasi Modul History:
+   a. Halaman user/history/index.php:
+      - Menambahkan tombol dan dukungan "Semua Tanggal" (tanggal=ALL atau kosong).
+      - Menyesuaikan filter mesin: saat mesin dipilih, pengguna dapat langsung melihat
+        seluruh riwayat mesin tersebut di berbagai tanggal.
+      - Memperbaiki JOIN: ON (hs.mcID = mm.id_mesin OR hs.mcID = mm.mcID).
+      - Memperbaiki fallback nama part: menggunakan part_name dari history_summary atau
+        history_quality (bukan log_quality).
+      - Menyertakan parameter id summary pada tautan kartu ke detail.php.
+      - Mengurutkan arsip dari yang paling baru (ORDER BY hs.tanggal DESC, hs.id DESC).
+
+   b. Halaman user/history/detail.php:
+      - Mendukung akses langsung berbasis ID arsip: detail.php?id=...
+      - Mengalokasikan memory_limit 512M dan max_execution_time 300 detik.
+      - Pre-caching Master CT: Membaca tabel master_ct sekali ke dalam memori RAM PHP
+        ($master_ct_map), mengeliminasi SQL LEFT JOIN yang berat pada ratusan ribu baris log.
+      - Fast String Slicing: Mengganti fungsi berat strtotime() dengan substr($timestamp, 11, 8).
+      - Pre-parsed Jam Boundaries: Mem-parsing rentang jam sekali saja, mengeliminasi 5 juta
+        pemanggilan explode() di dalam loop.
+      - Idle Skip: Melewati proses pencarian bucket jika tidak ada penambahan barang (qty_added = 0).
+      - Menggunakan index B-tree timestamp range (hq.timestamp >= ... AND hq.timestamp <= ...).
+      - Hasil: Waktu pemrosesan 212.272 log terpangkas dari 34+ detik (crash timeout)
+        menjadi hanya 14-15 detik, dan untuk shift normal (< 1.000 log) selesai dalam 0,02 detik.
+
+
+--------------------------------------------------------------------------------
+STATUS KESIAPAN SISTEM:
+- Firmware IoT: Stabil, terproteksi noise I2C & overflow 32-bit.
+- Backend Live: Sinkron dengan cavity master_ct, aman dari glitch.
+- Modul History: Berfungsi 100%, cepat, dan dapat membaca riwayat seluruh mesin.
+================================================================================

@@ -1,0 +1,498 @@
+[
+    {
+        "id": "9cb20855f2850f4e",
+        "type": "tab",
+        "label": "Flow 1",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "b73fb5074b13a234",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "localhost",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "db_simulasi",
+        "type": "MySQLdatabase",
+        "name": "DB_Simulasi",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "simulasi",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "da4fd7400bc008a4",
+        "type": "MySQLdatabase",
+        "name": "",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "simulasi",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "fe2a306348ab1306",
+        "type": "MySQLdatabase",
+        "name": "",
+        "host": "localhost",
+        "port": "3306",
+        "db": "data_arduino",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "7771209e67d25bd3",
+        "type": "mqtt-broker",
+        "name": "Local MQTT Broker",
+        "broker": "172.237.72.25",
+        "port": "1883",
+        "clientid": "",
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true
+    },
+    {
+        "id": "8d820fb23c570336",
+        "type": "MySQLdatabase",
+        "name": "DB_SMMS",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "nama_database_anda",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "f628f808344a6fc6",
+        "type": "mqtt-broker",
+        "name": "Local MQTT Broker",
+        "broker": "172.237.72.25",
+        "port": "1883",
+        "clientid": "",
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true
+    },
+    {
+        "id": "7b1d02381c928199",
+        "type": "mqtt in",
+        "z": "9cb20855f2850f4e",
+        "name": "MQTT IN ",
+        "topic": "SMMS/#",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "b73fb5074b13a234",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 80,
+        "y": 280,
+        "wires": [
+            [
+                "874a128a2f38fd32"
+            ]
+        ]
+    },
+    {
+        "id": "874a128a2f38fd32",
+        "type": "switch",
+        "z": "9cb20855f2850f4e",
+        "name": "Filter Topic",
+        "property": "topic",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Setup",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Login",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Proses",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/Produksi",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/NG",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/Downtime",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 6,
+        "x": 310,
+        "y": 280,
+        "wires": [
+            [
+                "268125f13d2b0585"
+            ],
+            [
+                "8f25223877f3218d"
+            ],
+            [
+                "f7176f1437a2a6df"
+            ],
+            [
+                "cb6629c14e852d22"
+            ],
+            [
+                "54dfd57d3414f99f"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "268125f13d2b0585",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "kode mesin",
+        "func": "msg.topic = \"SELECT mcID, id_mesin FROM master_mesin WHERE mcID = ? OR id_mesin = ?;\";\nmsg.payload = [msg.payload.mcID, msg.payload.mcID];\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 530,
+        "y": 140,
+        "wires": [
+            [
+                "c817e9950a8f45f2"
+            ]
+        ]
+    },
+    {
+        "id": "c817e9950a8f45f2",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB master_mesin",
+        "x": 750,
+        "y": 140,
+        "wires": [
+            [
+                "13269420c3773c25"
+            ]
+        ]
+    },
+    {
+        "id": "13269420c3773c25",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "bales mesin",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Setup\";\nlet outPayload = {};\nif (rows && rows.length > 0) {\n    outPayload = {\n        status: \"registered\",\n        mcID: rows[0].mcID,\n        id_mesin: rows[0].id_mesin\n    };\n} else {\n    outPayload = { status: \"failed\" };\n}\nmsg.payload = JSON.stringify(outPayload);\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 940,
+        "y": 140,
+        "wires": [
+            [
+                "f315ea4e4a7e11c1"
+            ]
+        ]
+    },
+    {
+        "id": "8f25223877f3218d",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "detect nik + level",
+        "func": "let mcID = String(msg.payload.mcID || '').trim();\nlet op_NIK = String(msg.payload.op_NIK || '').trim();\n\n// Query SQL menggunakan Parameter (?)\nmsg.topic = \"SELECT o.nik as nik_asli, o.nama, IFNULL(s.skill_level, 0) as skill_level \" +\n  \"FROM master_operator o \" +\n  \"LEFT JOIN skill_matrix s ON o.nik = s.nik_operator AND s.mcID IN (SELECT mcID FROM master_mesin WHERE mcID = ? OR id_mesin = ?) \" +\n  \"WHERE (o.nik = ? OR o.uid_kartu = ?);\";\n\n// Ada 4 tanda tanya, jadi array payload HARUS ada 4 item.\nmsg.payload = [mcID, mcID, op_NIK, op_NIK];\n\nnode.warn(\"YANG DIKIRIM ESP32 - mcID: \" + mcID + \", UID/NIK: \" + op_NIK);\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 520,
+        "y": 220,
+        "wires": [
+            [
+                "7fa0dff76c8e399c",
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "7fa0dff76c8e399c",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB operator & skill",
+        "x": 750,
+        "y": 220,
+        "wires": [
+            [
+                "a1f21431ee2b54b4"
+            ]
+        ]
+    },
+    {
+        "id": "a1f21431ee2b54b4",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "bales skill map",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Login\";\nlet outPayload = {};\n\nif (rows && rows.length > 0) {\n    let skill = rows[0].skill_level;\n    if (skill >= 3) {\n        outPayload = { status: \"success\", nik_asli: rows[0].nik_asli, nama: rows[0].nama, level: skill };\n    } else {\n        outPayload = { status: \"skill_low\" };\n    }\n} else {\n    outPayload = { status: \"unregistered\" };\n}\nmsg.payload = JSON.stringify(outPayload);\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 220,
+        "wires": [
+            [
+                "f315ea4e4a7e11c1"
+            ]
+        ]
+    },
+    {
+        "id": "f7176f1437a2a6df",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "kode proses",
+        "func": "msg.topic = \"SELECT part_name, part_number, proses_description FROM master_ct WHERE kode = ?;\";\nmsg.payload = [msg.payload.kode_proses];\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 520,
+        "y": 300,
+        "wires": [
+            [
+                "6e0aa9e9c0377994"
+            ]
+        ]
+    },
+    {
+        "id": "6e0aa9e9c0377994",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB master_ct",
+        "x": 750,
+        "y": 300,
+        "wires": [
+            [
+                "8ce7fca4fbf51f13"
+            ]
+        ]
+    },
+    {
+        "id": "8ce7fca4fbf51f13",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "bales kode proses",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Proses\";\nlet outPayload = {};\n\nif (rows && rows.length > 0) {\n    outPayload = {\n        status: \"found\",\n        nama_part: rows[0].part_name,\n        part_no: rows[0].part_number,\n        nama_proses: rows[0].proses_description || ''\n    };\n} else {\n    outPayload = { status: \"not_found\" };\n}\nmsg.payload = JSON.stringify(outPayload);\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 960,
+        "y": 300,
+        "wires": [
+            [
+                "f315ea4e4a7e11c1"
+            ]
+        ]
+    },
+    {
+        "id": "cb6629c14e852d22",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "log_quality",
+        "func": "let d = msg.payload;\nmsg.topic = `INSERT INTO log_quality \n(mcID, kode_proses, op_NIK, mcStatus, mcInfo, prodCount, NGCount) \nVALUES (?, ?, ?, ?, ?, ?, ?);`;\nmsg.payload = [d.mcID, d.kode_proses, d.op_NIK, d.mcStatus, d.mcInfo, d.prodCount, d.NGCount];\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 460,
+        "wires": [
+            [
+                "9868fec3bc7f7927",
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "9868fec3bc7f7927",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB log_quality",
+        "x": 580,
+        "y": 460,
+        "wires": [
+            [
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "54dfd57d3414f99f",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "log_ng",
+        "func": "let d = msg.payload;\n// Data ini didapat saat tombol NG+ atau NG- ditekan, qty_ng bisa minus jika itu repair.\nmsg.topic = `INSERT INTO log_ng (mcID, kode_proses, kode_ng, qty_ng) VALUES (?, ?, ?, ?);`;\nmsg.payload = [d.mcID, d.kode_proses, d.kode_ng, d.qty_ng];\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 250,
+        "y": 520,
+        "wires": [
+            [
+                "87922618ace1ce36",
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "87922618ace1ce36",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB log_ng",
+        "x": 550,
+        "y": 520,
+        "wires": [
+            [
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "f315ea4e4a7e11c1",
+        "type": "mqtt out",
+        "z": "9cb20855f2850f4e",
+        "name": "MQTT OUT",
+        "topic": "",
+        "qos": "0",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "b73fb5074b13a234",
+        "x": 1220,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "484cc74ad03078af",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "log_downtime",
+        "func": "let mcID = msg.payload.mcID || \"\";\nlet kode_dt = msg.payload.kode_dt || \"\";\nlet durasi_detik = msg.payload.durasi_detik || 0;\n\nmsg.topic = \"INSERT INTO log_downtime (mcID, kode_dt, durasi_detik) VALUES (?, ?, ?)\";\nmsg.payload = [mcID, kode_dt, durasi_detik];\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 200,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "76b3ad9d61698d55",
+        "type": "mysql",
+        "z": "9cb20855f2850f4e",
+        "mydb": "db_simulasi",
+        "name": "DB log_downtime",
+        "x": 490,
+        "y": 600,
+        "wires": [
+            [
+                "a97f7dadd28cccc7"
+            ]
+        ]
+    },
+    {
+        "id": "a97f7dadd28cccc7",
+        "type": "debug",
+        "z": "9cb20855f2850f4e",
+        "name": "debug 1",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 900,
+        "y": 480,
+        "wires": []
+    },
+    {
+        "id": "f74e2b9dc3ad0c01",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-node-mysql": "3.0.2"
+        }
+    }
+]
