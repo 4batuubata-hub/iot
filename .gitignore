@@ -5,3 +5,6 @@ Thumbs.db
 
 # Windows temporary files
 desktop.ini
+
+# Large database dumps
+irfan/backup_*.sql
