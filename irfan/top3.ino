@@ -45,11 +45,13 @@
 // MAC Address unik untuk Ethernet Shield (sudah tersolder)
 byte mac[] = { 0xDE, 0xAD, 0xBA, 0xEF, 0xBA, 0xCA };
 
-// IP statis Arduino Mega di jaringan lokal pabrik
-IPAddress ip(10, 10, 10, 200);
+// IP statis Arduino Mega di jaringan lokal (satu subnet dengan PC/Server)
+IPAddress ip(192, 168, 68, 200);
+IPAddress gateway(192, 168, 68, 1);
+IPAddress subnet(255, 255, 255, 0);
 
-// IP MQTT Broker (Node-RED Server)
-IPAddress mqttServer(10, 10, 10, 188);
+// IP MQTT Broker (Node-RED & Mosquitto Server)
+IPAddress mqttServer(192, 168, 68, 105);
 const int mqttPort = 1883;
 
 // Object koneksi jaringan
@@ -1543,7 +1545,7 @@ void setupEthernet() {
   lcd.clear();
   lcd.setCursor(0, 0); lcd.print(F("Koneksi Ethernet..."));
 
-  Ethernet.begin(mac, ip);
+  Ethernet.begin(mac, ip, gateway, gateway, subnet);
   delay(1000); // Tunggu Ethernet shield siap
 
   lcd.setCursor(0, 1); lcd.print(F("IP: "));
