@@ -202,13 +202,13 @@ String mcInfo           = "Mesin Off"; // Deskripsi status mesin
 String previousMcStatus = "off";       // Status sebelumnya (untuk deteksi transisi)
 String previousMcInfo   = "Stand By";  // Info sebelumnya
 
-// --- Counter Produksi ---
-int prodCount = 0;   // Total produksi
-int NGCount   = 0;   // Total NG
-int OKCount   = 0;   // OK = prodCount - NGCount
-unsigned int cycleCountSaved    = 0;  // Offset Nano
-unsigned int cycleCountReceived = 0;  // Counter dari Nano
-int cavity = 1;              // Cavity (default 1, bisa diubah dari proses)
+// --- Counter Produksi (Menggunakan unsigned long 32-bit agar kebal overflow) ---
+unsigned long prodCount = 0;   // Total produksi
+unsigned long NGCount   = 0;   // Total NG
+unsigned long OKCount   = 0;   // OK = prodCount - NGCount
+unsigned long cycleCountSaved    = 0;  // Offset Nano
+unsigned long cycleCountReceived = 0;  // Counter dari Nano
+int cavity = 1;              // Cavity (default 1, dihitung di database)
 
 // --- Multi-Model EEPROM Slots ---
 #define MAX_SLOTS 10
@@ -217,9 +217,9 @@ int cavity = 1;              // Cavity (default 1, bisa diubah dari proses)
 struct PartSlot {
   char partID[21];   // Nama part (20 char + null)
   char partNo[21];   // No part (20 char + null)
-  unsigned int okCount;
-  unsigned int ngCount;
-  unsigned int repairCount;
+  unsigned long okCount;
+  unsigned long ngCount;
+  unsigned long repairCount;
 };
 
 int active_slot_index = -1; // -1 = belum ada slot aktif
@@ -311,7 +311,7 @@ void writeStringToEEPROM(int addr, String data);
 String readStringFromEEPROM(int addr);
 void writeByteToEEPROM(int addr, byte val);
 byte readByteFromEEPROM(int addr);
-unsigned int readCounterFromNano();
+unsigned long readCounterFromNano();
 String checkDowntimeButton();
 
 // =====================================================================
@@ -727,12 +727,12 @@ void loop() {
         }
         
         // Sync counters
-        unsigned int targetProd = currentSlotData.okCount + currentSlotData.ngCount;
-        unsigned int rawCounter = cycleCountReceived;
+        unsigned long targetProd = currentSlotData.okCount + currentSlotData.ngCount;
+        unsigned long rawCounter = cycleCountReceived;
         
         // Menghindari underflow jika rawCounter * cavity > targetProd
-        int savedOffset = (targetProd / cavity) - rawCounter;
-        cycleCountSaved = savedOffset;
+        long savedOffset = ((long)targetProd / cavity) - (long)rawCounter;
+        cycleCountSaved = (savedOffset > 0) ? (unsigned long)savedOffset : 0;
         
         prodCount = targetProd;
         OKCount = currentSlotData.okCount;
@@ -951,7 +951,7 @@ void loop() {
             localNgQtys[foundIndex] -= ngQtyInput;
             NGCount -= ngQtyInput;
           }
-          OKCount = prodCount - NGCount;
+          OKCount = (prodCount >= NGCount) ? (prodCount - NGCount) : 0;
 
           StaticJsonDocument<256> doc;
           doc["mcID"]        = display_idMesin;
@@ -995,20 +995,42 @@ void loop() {
   // --- Baca Counter Produksi dari Arduino Nano (Polling setiap 1000ms) ---
   // Sengaja ditaruh di luar MAIN_SCREEN agar bisa di-debug kapan saja
   static unsigned long lastNanoRead = 0;
+  static byte dropConfirmationCount = 0;
   
   if (currentMillis - lastNanoRead >= 1000) {
     lastNanoRead = currentMillis;
-    unsigned int rawCounter = readCounterFromNano();
+    unsigned long rawCounter = readCounterFromNano();
     
-    // --- FITUR ANTI-DROP COUNTER ---
-    // Jika counter dari Nano tiba-tiba mengecil (misal dari 25 jadi 0 karena Nano restart akibat EMI),
-    // kita menjumlahkan total sebelumnya ke dalam cycleCountSaved agar produksi tidak turun.
-    if (rawCounter < cycleCountReceived && !(cycleCountReceived == 65535 && rawCounter == 0)) {
-       unsigned int gap = cycleCountReceived - rawCounter;
-       cycleCountSaved = cycleCountSaved + gap;  // Logika Addition (sama seperti smart_oee)
-       Serial.print(F("[WARNING] Nano Counter Drop Detected! Gap: ")); Serial.println(gap);
+    // --- FITUR ANTI-DROP & FILTER NOISE I2C COUNTER ---
+    if (rawCounter < cycleCountReceived) {
+      // Jika counter Nano mengecil mendekati 0 (indikasi Nano reboot)
+      if (rawCounter <= 5) {
+        dropConfirmationCount++;
+        // Debounce konfirmasi reboot minimal 2 detik berturut-turut di angka rendah
+        if (dropConfirmationCount >= 2) {
+          cycleCountSaved += cycleCountReceived;
+          cycleCountReceived = rawCounter;
+          dropConfirmationCount = 0;
+          Serial.print(F("[CONFIRMED] Nano Reboot Terdeteksi! New Saved: ")); 
+          Serial.println(cycleCountSaved);
+        }
+      } else {
+        // Drop anomali sesaat akibat noise I2C -> abaikan, jangan kurangi atau tambahkan
+        dropConfirmationCount = 0;
+        Serial.print(F("[WARNING] Drop anomali sesaat diabaikan. Raw: "));
+        Serial.println(rawCounter);
+      }
+    } else {
+      dropConfirmationCount = 0;
+      unsigned long delta = rawCounter - cycleCountReceived;
+      // Validasi batas fisik stroke mesin (maks 50 stroke per detik)
+      if (delta <= 50) {
+        cycleCountReceived = rawCounter;
+      } else {
+        Serial.print(F("[WARNING] Lonjakan Noise I2C Diabaikan! Delta: "));
+        Serial.println(delta);
+      }
     }
-    cycleCountReceived = rawCounter;
     
     // DEBUG: Tampilkan data asli Nano ke Serial Monitor
     Serial.print(F("[DEBUG] Raw Nano: ")); 
@@ -1016,22 +1038,22 @@ void loop() {
     Serial.print(F(" | Saved: "));
     Serial.print(cycleCountSaved);
       
-      // Perhitungan produksi: akumulasi history + pembacaan sekarang
-      unsigned int cycleCount = cycleCountSaved + cycleCountReceived;
-      prodCount = cycleCount * cavity;
-      OKCount = prodCount - NGCount;
+    // Perhitungan produksi: akumulasi history + pembacaan sekarang
+    unsigned long cycleCount = cycleCountSaved + cycleCountReceived;
+    prodCount = cycleCount * (unsigned long)cavity;
+    OKCount = (prodCount >= NGCount) ? (prodCount - NGCount) : 0;
 
-      // --- AUTO-SAVE EEPROM ---
-      if (active_slot_index != -1) {
-          if (OKCount != currentSlotData.okCount || NGCount != currentSlotData.ngCount) {
-              currentSlotData.okCount = OKCount;
-              currentSlotData.ngCount = NGCount;
-              writeSlotToEEPROM(active_slot_index, currentSlotData);
-          }
-      }
+    // --- AUTO-SAVE EEPROM ---
+    if (active_slot_index != -1) {
+        if (OKCount != currentSlotData.okCount || NGCount != currentSlotData.ngCount) {
+            currentSlotData.okCount = OKCount;
+            currentSlotData.ngCount = NGCount;
+            writeSlotToEEPROM(active_slot_index, currentSlotData);
+        }
+    }
 
-      Serial.print(F(" | Prod LCD: "));
-      Serial.println(prodCount);
+    Serial.print(F(" | Prod LCD: "));
+    Serial.println(prodCount);
   }
 
   // =====================================================================
@@ -1508,7 +1530,7 @@ void processMainScreen() {
     lastop_NIK = op_NIK;
   }
 
-  OKCount = prodCount - NGCount;
+  OKCount = (prodCount >= NGCount) ? (prodCount - NGCount) : 0;
   if (OKCount != lastOKCount || forceUpdate) {
     lcd.setCursor(9, 3); lcd.print(F("|      "));
     lcd.setCursor(11, 3); lcd.print(OKCount);
@@ -1585,16 +1607,26 @@ void reconnectMQTT() {
 //  Arduino Nano menghitung pulsa dari sensor produksi (encoder/proximity)
 //  dan mengirimkan nilai counter via I2C saat diminta.
 // =====================================================================
-unsigned int readCounterFromNano() {
-  static unsigned int lastValidCounter = 0;
+unsigned long readCounterFromNano() {
+  static unsigned long lastValidCounter = 0;
   byte bytesRead = 0;
+  uint16_t readVal = 0;
 
   // Coba maksimal 3 kali untuk membaca I2C karena bus berbagi dengan LCD, RFID, dan RTC
   for (int i = 0; i < 3; i++) {
     bytesRead = Wire.requestFrom((uint8_t)NANO_I2C_ADDR, (uint8_t)2);
     if (bytesRead == 2) {
-      lastValidCounter = (Wire.read() << 8) | Wire.read();  // Gabung High + Low byte
-      break; // Sukses, keluar dari loop retry
+      byte highByte = Wire.read();
+      byte lowByte = Wire.read();
+      readVal = ((uint16_t)highByte << 8) | lowByte;
+
+      // Filter Bus Floating / Noise Bitmask (0xFFFF = 65535, 0x7FFF = 32767)
+      if (readVal == 0xFFFF || readVal == 0x7FFF) {
+        Serial.println(F("[WARNING] I2C Glitch / Bus Floating (0xFFFF/0x7FFF) diabaikan!"));
+      } else {
+        lastValidCounter = readVal;
+        break; // Sukses & valid, keluar dari loop retry
+      }
     }
     delay(10); // Jeda 10ms sebelum mencoba lagi
   }
