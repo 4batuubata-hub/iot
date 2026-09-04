@@ -1,126 +1,218 @@
 ================================================================================
-LAPORAN INVESTIGASI MASALAH DAN DAFTAR PERBAIKAN SISTEM IOT OEE PT CNC
-Folder: irfan/masalah.txt
-Tanggal: 04 September 2026
+LAPORAN INVESTIGASI LENGKAP, KNOWLEDGE TRANSFER & DOKUMENTASI SISTEM IOT OEE
+Folder Proyek : irfan/masalah.txt
+Waktu Update  : 04 September 2026, Pukul 00:45:00 WIB (Local Time)
+Target Pembaca: Engineer / Programmer Baru & AI Assistant (RDP Baru / Migrasi)
 ================================================================================
 
---------------------------------------------------------------------------------
-BAGIAN 1: DAFTAR MASALAH YANG DITEMUKAN (ROOT CAUSES)
---------------------------------------------------------------------------------
+DOKUMEN INI BERISI SELURUH RIWAYAT TEMUAN, ANALISIS AKAR MASALAH (ROOT CAUSE),
+BUKTI LOG DATABASE, ARSITEKTUR HARDWARE/SOFTWARE, SERTA REKOMENDASI DEPLOYMENT.
+PASTIKAN MEMBACA DOKUMEN INI SEBELUM MELAKUKAN PERUBAHAN APAPUN PADA SISTEM.
 
-1. Anomali Lonjakan Total Produksi (Hingga 175.328 Pcs)
-   - Masalah: Pada pengujian trial mesin Welding Spot (2 WS35 - 020), counter produksi
-     melonjak drastis hingga ratusan ribu pcs dalam satu shift.
-   - Penyebab:
-     a. Komunikasi I2C antara Arduino Nano (counter hardware) dan Arduino Mega/ESP32
-        mengalami glitch/noise floating bus ketika kabel pulsa terganggu atau mesin mati.
-        Saat bus floating/lost ACK, data byte yang terbaca menjadi 0xFFFF (65.535)
-        atau 0x7FFF (32.767).
-     b. Tipe data counter di firmware sebelumnya menggunakan int16 bertanda (signed int).
-        Ketika pulsa mencapai 32.768, angka berbalik menjadi negatif (-32.768) atau
-        terbaca acak, yang memicu lonjakan kalkulasi selisih (delta) di server.
-     c. Algoritma "Anti-Drop" lama di PHP: ketika nilai counter turun (akibat reset atau
-        glitch), sistem langsung menambahkan seluruh counter baru ke total tanpa memvalidasi
-        apakah angka tersebut masuk akal secara fisik (kapasitas mekanikal mesin).
+================================================================================
+BAGIAN 1: ARSITEKTUR SISTEM & TOPOLOGI INFRASTRUKTUR
+================================================================================
 
-2. Losstime Mesin Membengkak hingga 12.383 Menit (~8,6 Hari)
-   - Masalah: Tampilan downtime / losstime mesin mencapai 12.383 menit.
-   - Penyebab: Sistem IoT dibiarkan menyala dan beroperasi terus-menerus selama 8,6 hari
-     (dari 26 Agustus 2026 s/d 04 September 2026) tanpa dilakukan eksekusi "Reset Shift".
-     Akibatnya, seluruh durasi off/standby selama berhari-hari terakumulasi ke dalam
-     satu record shift kerja yang sama.
+1. ARSITEKTUR HARDWARE
+   - Arduino Mega 2560 (Master Controller / Finite State Machine):
+     * Mengatur alur login operator, pemilihan part & kode proses, pemantauan status
+       mesin (Run, StandBy, Alarm, Off), interlock relay (Pin A9), dan pengiriman MQTT.
+     * Terhubung ke Ethernet Shield W5100 via SPI bus (Pin 10, 50, 51, 52, 53).
+     * Jalur I2C Shared Bus (SDA=20, SCL=21) melayani:
+       1) LCD 20x4 (Alamat 0x27)
+       2) EEPROM AT24C256 (Alamat 0x50) - Menyimpan ID Mesin permanen
+       3) RTC DS3231 (Alamat 0x68) - Pewaktuan real-time offline
+       4) Arduino Nano Counter Slave (Alamat 0x08)
+     * Modul RFID PN532: Dihubungkan ke Serial2 Hardware UART (RX2=17, TX2=16),
+       BUKAN I2C. Hal ini sengaja diubah dari desain awal karena radiasi elektromagnetik
+       antena RFID pada I2C sering melumpuhkan (freeze) bus I2C Mega.
+   - Arduino Nano (Dedicated Counter Slave):
+     * Berfungsi khusus menghitung pulsa fisik / stroke mesin via Pin 2 (INPUT_PULLUP).
+     * Menggunakan Digital Low-Pass Filter (Polling Debounce 50ms di loop()),
+       bukan Hardware Interrupt. Interrupt dihindari karena sangat sensitif terhadap
+       noise AC 50Hz kabel floating dan induksi mesin las/welding.
+     * Mengirimkan data counter (2 byte: High Byte & Low Byte) ke Mega via I2C saat diminta.
 
-3. Masalah Integrasi Multiplier Cavity Mesin
-   - Masalah: Perhitungan output harus mempertimbangkan cetakan cavity mesin (misal
-     1 stroke menghasilkan 2, 4, atau 8 pcs part).
-   - Catatan Desain: Hardware IoT hanya menghitung pulsa fisik / stroke mesin (1 stroke = 1 pulsa).
-     Cavity dikelola pada tingkat database (tabel master_ct). Sebelumnya, proteksi
-     delta di PHP tidak memperhitungkan pengali cavity, sehingga part dengan cavity > 1
-     berisiko terpotong oleh filter batas stroke jika tidak disesuaikan.
+2. TOPOLOGI JARINGAN & PROTOKOL
+   - Subnet Standar LAN Pabrik: 192.168.68.0 / 24 (Netmask 255.255.255.0, Gateway 192.168.68.1).
+   - Server Komputer / RDP:
+     * IP Server: 192.168.68.105
+     * Mosquitto MQTT Broker: Port 1883 (Mendengarkan di 0.0.0.0:1883)
+     * Node-RED Engine: Port 1880
+     * Web Server (Apache XAMPP): Port 80
+     * Database MySQL: Port 3306 (Database aktif: `simulasi`, Database backup: `simulasi_real`)
+   - Arduino Mega:
+     * IP Statis: 192.168.68.200 (Default line uji coba)
+     * MAC Address: { 0xDE, 0xAD, 0xBA, 0xEF, 0xBA, 0xCA }
+   - Topik MQTT Aktif:
+     * Publish IoT   : SMMS/Request/Setup, SMMS/Request/Login, SMMS/Request/Proses,
+                       SMMS/Data/Produksi, SMMS/Data/NG, SMMS/Data/Downtime
+     * Subscribe IoT : SMMS/Reply/Setup, SMMS/Reply/Login, SMMS/Reply/Proses
 
-4. Bug Dangling Reference pada PHP Array Loop
-   - Masalah: Pada dekidaka tabel hourly, data baris terakhir sering terduplikasi atau
-     nilainya tertimpa oleh baris di atasnya.
-   - Penyebab: Penggunaan referensi pointer PHP (&$data, &$partData) tanpa pemanggilan
-     unset() setelah foreach selesai. Referensi variabel terakhir tetap menempel
-     di memori dan mengubah elemen array terakhir pada iterasi berikutnya.
+================================================================================
+BAGIAN 2: BEDAH KASUS & INVESTIGASI AKAR MASALAH (ROOT CAUSE)
+================================================================================
 
-5. Gagal Membaca Arsip History (history/index.php & history/detail.php)
-   - Masalah: Halaman user/history/index.php dan user/history/detail.php gagal membaca data,
-     halaman loading tanpa henti (timeout 30 detik), atau menampilkan "Tidak ada data history".
-   - Penyebab di index.php:
-     a. Filter tanggal terkunci kaku pada hs.tanggal = '$filterTanggal' (default tanggal terbaru).
-        Tidak ada opsi "Semua Tanggal". Saat operator memfilter mesin tertentu yang berjalan
-        pada tanggal sebelumnya (contoh: 2 PR45 - 032 pada 20-08-2026), hasil query langsung
-        kosong (0 data).
-     b. Relasi SQL: LEFT JOIN master_mesin mm ON hs.mcID = mm.mcID gagal karena mm.mcID
-        bertipe numerik (contoh: 3024), sedangkan hs.mcID menyimpan kode string (contoh: '2 WS35 - 020').
-     c. Baris pencarian nama part terakhir di index.php mengambil dari tabel log_quality
-        (tabel live yang sudah dikosongkan setelah reset shift), bukan dari history_quality.
-   - Penyebab di detail.php:
-     a. Record uji coba 8,6 hari menghasilkan 212.272 baris di history_quality.
-        Query detail.php menjalankan LEFT JOIN master_ct pada 212.272 baris dan memproses
-        strtotime() serta explode() di dalam perulangan PHP sebanyak jutaan kali.
-        Hal ini memakan waktu > 34 detik, melebihi max_execution_time PHP (30 detik),
-        sehingga server langsung memutus koneksi (Fatal Error / Gateway Timeout).
-     b. detail.php tidak mengenali parameter id summary (hanya membaca mcID dan tanggal).
-
+Berdasarkan investigasi data pengujian multi-hari pada mesin Welding Spot
+(mcID: "2 WS35 - 020") di database `simulasi_real`, ditemukan masalah kritis berikut:
 
 --------------------------------------------------------------------------------
-BAGIAN 2: DAFTAR PERBAIKAN YANG TELAH DILAKUKAN (SOLUSI IMPLEMENTASI)
+KASUS 1: COUNTER MENJADI MINUS (-32.768) DAN GLITCH 32.767
 --------------------------------------------------------------------------------
-
-1. Pembaruan Firmware Arduino (irfan/top8-FIX.ino)
-   - Tipe data counter diupgrade menjadi 32-bit unsigned long (0 s/d 4.294.967.295).
-   - Filter Noise I2C: Menolak pembacaan bernilai 0xFFFF (65.535) atau 0x7FFF (32.767).
-   - Validasi Reboot: Reset counter hanya diakui sah jika nilai mentah <= 5 dan bertahan
-     stabil minimal selama 2 siklus pembacaan berturut-turut.
-   - Mechanical Limit: Perubahan pulsa dibatasi maksimal delta <= 50 pulsa/detik.
-
-2. Proteksi Database & SQL Trigger (trigger.sql)
-   - Trigger before_log_quality_insert:
-     * Menghitung delta pulsa murni (stroke) secara otomatis.
-     * Mengalikan stroke dengan nilai cavity dari master_ct secara real-time saat insert.
-     * Mengabaikan lonjakan pulsa abnormal yang melebihi batas fisik mesin.
-     * Menyimpan nilai pulsa asli ke kolom raw_prodCount untuk audit jejak data.
-   - Penambahan Covering Index:
-     * Menambahkan composite index idx_history_fast (mcID, timestamp, prodCount, kode_proses)
-       pada tabel history_quality (diterapkan pada database simulasi dan simulasi_real).
-
-3. Optimalisasi Logika Dashboard Live (detail.php, user/detail.php, proses_reset.php)
-   - Menyelaraskan batas delta proteksi PHP dengan cavity: max_delta = 50 * cavity.
-   - Mengurutkan jam dekidaka secara kronologis berdasarkan jam mulai shift (Shift 2: 16:00 -> 00:00).
-   - Membersihkan pointer referensi PHP dengan unset($data) dan unset($partData).
-   - Memastikan rumus Total Produksi konsisten: Total OK + Total NG.
-
-4. Perbaikan & Akselerasi Modul History:
-   a. Halaman user/history/index.php:
-      - Menambahkan tombol dan dukungan "Semua Tanggal" (tanggal=ALL atau kosong).
-      - Menyesuaikan filter mesin: saat mesin dipilih, pengguna dapat langsung melihat
-        seluruh riwayat mesin tersebut di berbagai tanggal.
-      - Memperbaiki JOIN: ON (hs.mcID = mm.id_mesin OR hs.mcID = mm.mcID).
-      - Memperbaiki fallback nama part: menggunakan part_name dari history_summary atau
-        history_quality (bukan log_quality).
-      - Menyertakan parameter id summary pada tautan kartu ke detail.php.
-      - Mengurutkan arsip dari yang paling baru (ORDER BY hs.tanggal DESC, hs.id DESC).
-
-   b. Halaman user/history/detail.php:
-      - Mendukung akses langsung berbasis ID arsip: detail.php?id=...
-      - Mengalokasikan memory_limit 512M dan max_execution_time 300 detik.
-      - Pre-caching Master CT: Membaca tabel master_ct sekali ke dalam memori RAM PHP
-        ($master_ct_map), mengeliminasi SQL LEFT JOIN yang berat pada ratusan ribu baris log.
-      - Fast String Slicing: Mengganti fungsi berat strtotime() dengan substr($timestamp, 11, 8).
-      - Pre-parsed Jam Boundaries: Mem-parsing rentang jam sekali saja, mengeliminasi 5 juta
-        pemanggilan explode() di dalam loop.
-      - Idle Skip: Melewati proses pencarian bucket jika tidak ada penambahan barang (qty_added = 0).
-      - Menggunakan index B-tree timestamp range (hq.timestamp >= ... AND hq.timestamp <= ...).
-      - Hasil: Waktu pemrosesan 212.272 log terpangkas dari 34+ detik (crash timeout)
-        menjadi hanya 14-15 detik, dan untuk shift normal (< 1.000 log) selesai dalam 0,02 detik.
-
+- Rekam Jejak Database (27 Agustus 2026, 13:05 WIB):
+  * ID 98575 | 13:05:29 | standBy | prodCount: 94
+  * ID 98576 | 13:05:31 | standBy | prodCount: 95
+  * ID 98577 | 13:05:33 | standBy | prodCount: 32767  <-- GLITCH I2C MASUK!
+  * ID 98578 | 13:05:35 | standBy | prodCount: 32767
+  * ID 98579 | 13:05:37 | standBy | prodCount: -32768 <-- OVERFLOW JADI MINUS!
+  * ID 98581 | 13:05:41 | standBy | prodCount: -32767 (bertambah dari minus)
+  * ID 98583 | 13:05:45 | standBy | prodCount: -32766
+- Akar Masalah:
+  1) Kabel I2C mengalami noise induksi sesaat sehingga jalur sinyal pull-up terbaca
+     tinggi semua (floating). Nilai hex yang terbaca adalah 0x7FFF (desimal: 32.767).
+  2) Tipe data variabel counter di firmware lama menggunakan `int` (16-bit signed).
+     Rentang nilai signed int adalah -32.768 hingga +32.767.
+  3) Saat nilai 32.767 mendapat tambahan 1 stroke dari operator (32.767 + 1),
+     register memori mengalami Arithmetic Overflow dan berbalik menjadi -32.768.
+  4) Seterusnya angka terus berjalan dari nilai minus tersebut.
 
 --------------------------------------------------------------------------------
-STATUS KESIAPAN SISTEM:
-- Firmware IoT: Stabil, terproteksi noise I2C & overflow 32-bit.
-- Backend Live: Sinkron dengan cavity master_ct, aman dari glitch.
-- Modul History: Berfungsi 100%, cepat, dan dapat membaca riwayat seluruh mesin.
+KASUS 2: LONJAKAN GLITCH GAIB (+29.436 PCS DALAM 3 DETIK)
+--------------------------------------------------------------------------------
+- Rekam Jejak Database (29 Agustus 2026, 23:47 WIB):
+  * ID 156025 | 23:47:36 | run     | prodCount: 2530
+  * ID 156026 | 23:47:38 | run     | prodCount: 2531 (Produksi asli sebenarnya)
+  * ID 156027 | 23:47:41 | run     | prodCount: 31967 <-- LONJAKAN +29.436 PCS DALAM 3 DETIK!
+  * ID 156028 | 23:47:43 | standBy | prodCount: 31967
+  * ID 156423 | 00:00:56 | standBy | prodCount: 32313 (Mesin standby di angka palsu)
+- Akar Masalah:
+  1) Di kode firmware lama terdapat logika berbahaya:
+     if (rawCounter < cycleCountReceived) {
+        unsigned int gap = cycleCountReceived - rawCounter;
+        cycleCountSaved = cycleCountSaved + gap; // PENAMBAHAN GAP PERMANEN!
+     }
+  2) Niat awal logika tersebut adalah "anti-drop" jika Nano restart. Namun jika kabel
+     I2C drop sesaat selama 1 detik (misal drop ke 0 atau membaca nilai floating lalu
+     kembali ke angka awal), rumus di atas menghitung selisih puluhan ribu sebagai
+     "gap" dan MENAMBAHKANNYA SECARA PERMANEN ke `cycleCountSaved`.
+  3) Akibatnya, angka produksi membengkak menjadi puluhan ribu secara instan dan
+     terkunci di memori alat.
+
+--------------------------------------------------------------------------------
+KASUS 3: LOSSTIME MEMBENGKAK HINGGA 12.383 MENIT (~8,6 HARI)
+--------------------------------------------------------------------------------
+- Akar Masalah:
+  Alat IoT dibiarkan hidup dan memancarkan status MQTT selama 8,6 hari tanpa pernah
+  dilakukan eksekusi "Reset Shift" pada akhir jam kerja. Seluruh durasi mesin tidak
+  beroperasi diakumulasi terus-menerus ke dalam 1 sesi shift yang sama.
+
+--------------------------------------------------------------------------------
+KASUS 4: WEB DASHBOARD DETAIL.PHP HANG / TIMEOUT (212.272 BARIS LOG)
+--------------------------------------------------------------------------------
+- Akar Masalah:
+  1) Akumulasi log uji coba menghasilkan 212.272 baris di tabel `history_quality`.
+  2) Halaman `user/history/detail.php` lama menjalankan SQL `LEFT JOIN master_ct`
+     pada 212 ribu baris, ditambah eksekusi fungsi PHP `strtotime()` dan `explode()`
+     sebanyak jutaan kali di dalam loop parsing jam.
+  3) Waktu eksekusi melebihi limit default PHP (30 detik), memicu Fatal Error / 504 Gateway Timeout.
+
+================================================================================
+BAGIAN 3: SOLUSI REKAYASA SISTEM YANG SUDAH DITERAPKAN
+================================================================================
+
+1. PERBAIKAN FIRMWARE ARDUINO (top8-FIX.ino & top3.ino)
+   a. Upgrade Tipe Data ke `unsigned long` (32-Bit):
+      - Semua variabel counter (`prodCount`, `NGCount`, `OKCount`, `cycleCountSaved`,
+        `cycleCountReceived`) diubah menjadi `unsigned long`.
+      - Rentang nilai: 0 s/d 4.294.967.295 (4,29 Milyar).
+      - Nilai murni non-negatif: Mustahil berbalik menjadi minus (-32.768) atau overflow.
+   b. Filter Bitmask Glitch I2C:
+      - Di fungsi `readCounterFromNano()`, nilai bitmask floating `0xFFFF` (65.535)
+        dan `0x7FFF` (32.767) langsung DIBUANG sebelum masuk ke variabel program.
+   c. Debounce Reboot 2 Detik (Menggantikan Rumus Gap Lama):
+      - Penurunan counter hanya diakui sebagai restart sah jika `rawCounter <= 5`
+        DAN stabil bertahan minimal 2 detik berturut-turut.
+      - Drop sesaat 1 detik atau drop ke angka di atas 5 langsung DIABAIKAN (ignored).
+   d. Filter Batas Fisik Stroke (Mechanical Limit):
+      - Diterapkan pengaman `delta <= 50`. Jika dalam 1 detik counter bertambah
+        lebih dari 50 pulsa, lonjakan tersebut dianggap noise dan dibuang.
+   e. Proteksi Underflow OKCount:
+      - Rumus diubah menjadi: `OKCount = (prodCount >= NGCount) ? (prodCount - NGCount) : 0;`
+
+2. FILOSOFI CAVITY (HARDWARE VS DATABASE)
+   - PRINSIP UTAMA: Hardware IoT (Arduino) HANYA menghitung pukulan mekanik murni
+     (1 stroke = 1 pulsa).
+   - Pengalian cavity (misal 1 stroke = 2 part) dikelola SEPENUHNYA di database
+     melalui tabel `master_ct` dan SQL trigger `before_log_quality_insert`.
+   - Mengapa? Agar jika jenis part atau cetakan diganti di database, firmware IoT
+     tidak perlu di-flash ulang ke mesin!
+
+3. OPTIMALISASI DATABASE & BACKEND WEB
+   a. Composite Indexing:
+      - Menambahkan index komposit `idx_history_fast (mcID, timestamp, prodCount, kode_proses)`
+        pada tabel `history_quality` di database `simulasi` dan `simulasi_real`.
+   b. Akselerasi Ekstrem `user/history/detail.php`:
+      - Pre-caching memory: Membaca tabel `master_ct` sekali ke array PHP (`$master_ct_map`),
+        menghilangkan query LEFT JOIN berat pada 212 ribu baris.
+      - Fast String Slicing: Mengganti `strtotime()` lambat dengan `substr($row['timestamp'], 11, 8)`.
+      - Pre-parsed Jam Boundaries: Parsing rentang jam di luar loop, menghemat jutaan explode().
+      - Hasil: Waktu baca 212.272 log turun drastis dari >34 detik (timeout) menjadi ~14 detik!
+        Untuk shift normal (<1.000 log), loading selesai dalam 0,02 detik.
+   c. Pembaruan `user/history/index.php`:
+      - Mendukung filter "Semua Tanggal" (`tanggal=ALL`).
+      - Link kartu riwayat langsung mengirim parameter unik `id` ke `detail.php?id=...`.
+
+================================================================================
+BAGIAN 4: PERBEDAAN FIRMWARE top3.ino VS top8-FIX.ino
+================================================================================
+
+Keduanya sudah memiliki IP 192.168.68.x, tipe data unsigned long, filter glitch 0x7FFF,
+dan debounce reboot 2 detik yang sama persis. Perbedaan yang tersisa adalah:
+
+1. `top3.ino` (Versi Multi-Model EEPROM):
+   - Memiliki 10 slot memori part di chip EEPROM AT24C256.
+   - Memiliki layar `REVIEW_PART_SCREEN` yang dibuka dengan menekan tombol fisik CTRL.
+   - Operator bisa menekan tombol PROG+/PROG- untuk melihat riwayat part ke 1-10 di shift tersebut.
+   - Menulis ke EEPROM setiap kali ada penambahan produksi.
+
+2. `top8-FIX.ino` (Versi Standar Pabrik - DIREKOMENDASIKAN):
+   - Dibuat lebih ramping dan stabil.
+   - Tidak melakukan write ke EEPROM berulang-ulang tiap detik (menjaga keawetan chip
+     dan membebaskan jalur I2C agar pembacaan Nano dan LCD lancar tanpa interferensi).
+   - Seluruh tracking multi-part dan akumulasi shift diserahkan ke Node-RED & Database.
+
+================================================================================
+BAGIAN 5: PANDUAN UNTUK DEPLOYMENT KE MESIN LAIN (MULTI-MACHINE)
+================================================================================
+
+Ketika Anda ingin memasang sistem IoT ini ke mesin-mesin berikutnya di pabrik:
+
+1. PENGATURAN ALAMAT IP & DHCP:
+   - Jaringan pabrik Anda sudah memiliki DHCP Server aktif (DHCP Enabled: Yes).
+   - Di masa depan, Mega bisa menggunakan `Ethernet.begin(mac)` untuk otomatis
+     menerima IP dari router tanpa perlu disetting manual satu per satu.
+   - Jika tetap menggunakan IP Statis, pastikan tiap mesin memiliki IP berbeda di oktet
+     terakhir (contoh: Mesin 1 = .201, Mesin 2 = .202, Mesin 3 = .203, dst).
+
+2. PENGATURAN MAC ADDRESS:
+   - Setiap Ethernet Shield W5100 di jaringan LAN WAJIB memiliki MAC Address unik.
+   - Tips Praktis: Gunakan ID Mesin (misal dari EEPROM) untuk mengisi byte terakhir MAC:
+     byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0x00, (byte)machineNumber };
+     sehingga tidak akan pernah terjadi tabrakan alamat MAC di switch hub LAN pabrik.
+
+3. PENGATURAN ID MESIN:
+   - ID Mesin disimpan permanen di EEPROM AT24C256 pada alamat 10.
+   - ID Mesin dapat diset langsung melalui kombinasi tombol fisik setup pada panel box IoT
+     tanpa perlu membongkar atau mencolokkan kabel USB laptop ke Arduino.
+
+================================================================================
+LOKASI ARSIP & BACKUP (GIT & FISIK)
+================================================================================
+- Branch Git Utama Perbaikan : `experimental-feature`
+- Folder Repository Aktif    : `C:\xampp\htdocs\iot\`
+- Folder Workspace Dev      : `scratch/iot/`
+- Folder Backup Fisik Luar   : `C:\xampp\htdocs\iot_backup_experimental_feature\`
+================================================================================
+CATATAN INI DISUSUN SECARA DETAIL AGAR SIAPAPUN (ENGINEER BARU / MODEL AI)
+DAPAT MEMAHAMI KONTEKS PENUH SISTEM TANPA KEHILANGAN SEJARAH INVESTIGASI.
 ================================================================================
