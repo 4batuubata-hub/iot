@@ -236,19 +236,50 @@ if ($res_logs && $res_logs->num_rows > 0) {
             }
         }
         
-        // JIKA JAM LEMBUR / DILUAR TEMPLATE, TAMBAHKAN SLOT BARU
+        // JIKA JAM LEMBUR / DILUAR TEMPLATE, TAMBAHKAN SLOT BARU SECARA BERURUTAN
         if (!$matched_jam) {
-            $hour = (int)date('H', strtotime($logTime));
-            $start = str_pad($hour, 2, '0', STR_PAD_LEFT).":00";
-            $end = str_pad($hour+1, 2, '0', STR_PAD_LEFT).":00";
-            if($hour == 23) $end = "23:59";
-            $matched_jam = "$start - $end";
+            $last_end = null;
+            if (!empty($jamAktif)) {
+                $last_bucket = end($jamAktif);
+                $p = explode('-', $last_bucket);
+                if (count($p) == 2) $last_end = trim($p[1]);
+            }
             
-            if (!in_array($matched_jam, $jamAktif)) {
-                // Tambahkan slot lembur ke array jam aktif
-                $jamAktif[] = $matched_jam;
-                $hourlyActualSum[$matched_jam] = 0;
-                $hourlyTargetSum[$matched_jam] = 0;
+            if ($last_end) {
+                $s_time = strtotime($last_end . ":00");
+                $loops = 0;
+                while($loops < 10) {
+                    $e_time = strtotime("+1 hour", $s_time);
+                    $start = date('H:i', $s_time);
+                    $end = date('H:i', $e_time);
+                    $new_bucket = "$start - $end";
+                    
+                    if (!in_array($new_bucket, $jamAktif)) {
+                        $jamAktif[] = $new_bucket;
+                        $hourlyActualSum[$new_bucket] = 0;
+                        $hourlyTargetSum[$new_bucket] = 0;
+                    }
+                    
+                    if (isTimeInRange($logTime, $new_bucket)) {
+                        $matched_jam = $new_bucket;
+                        break;
+                    }
+                    $s_time = $e_time;
+                    $loops++;
+                }
+            }
+            
+            if (!$matched_jam) {
+                $hour = (int)date('H', strtotime($logTime));
+                $start = str_pad($hour, 2, '0', STR_PAD_LEFT).":00";
+                $end = str_pad($hour+1, 2, '0', STR_PAD_LEFT).":00";
+                if($hour == 23) $end = "23:59";
+                $matched_jam = "$start - $end";
+                if (!in_array($matched_jam, $jamAktif)) {
+                    $jamAktif[] = $matched_jam;
+                    $hourlyActualSum[$matched_jam] = 0;
+                    $hourlyTargetSum[$matched_jam] = 0;
+                }
             }
         }
         

@@ -23,8 +23,12 @@ Sistem terdiri dari dua bagian utama:
   Dashboard *history* produksi yang menampilkan data produksi hari-hari sebelumnya berdasarkan Shift. Dilengkapi filter kalender.
 - **`history/detail.php`**
   Rincian data produksi *historical* mesin. Menampilkan *dekidaka* lengkap, profil operator yang bertugas pada shift tersebut, dan total perhitungan scrap/repair.
+- **`cron_reset.php`** (Arsitektur Baru)
+  Script background (CLI) yang dieksekusi secara periodik setiap pergantian shift. Script ini memindahkan data ratusan ribu baris secara massal ke `history_*` tanpa membebani dan membuat hang *dashboard* frontend.
+- **`setup_cron.bat`** (Baru)
+  Script otomasi / *installer* Windows Task Scheduler. Menjadwalkan `cron_reset.php` agar berjalan menggunakan *user* `SYSTEM` di *background* tiap 10 menit. Karena berjalan sebagai SYSTEM, reset shift dan perpindahan data tetap bekerja penuh meskipun PC server hanya sampai *Lock Screen* (belum *login* user).
 - **`history/proses_reset.php`**
-  Script yang dieksekusi setiap pergantian shift (otomatis atau manual via "Tutup Buku"). Memindahkan data realtime dari tabel `log_*` ke tabel `history_*`, dan menghitung final OEE untuk disimpan di `history_summary`.
+  Didepresiasi/digantikan oleh `cron_reset.php`. Sebelumnya digunakan untuk manual reset, namun tidak direkomendasikan untuk skala data besar perusahaan.
 
 ### 3. Pengaturan Master Data
 - **`pengaturan_line.php`**
@@ -55,7 +59,44 @@ Sistem terdiri dari dua bagian utama:
 3. **Produksi**: IoT membaca sensor *Counter* dan status mesin (RUN/STANDBY/ALARM). IoT mem-publish JSON secara konstan ke Node-RED, yang me-Log datanya ke tabel `log_quality`.
 4. **Downtime**: Operator menekan 1 dari 25 tombol downtime. IoT mengirim durasinya saat mesin kembali RUN. Masuk ke tabel `log_downtime`.
 5. **Dashboard Web**: `index.php` membaca `log_quality`, menghitung OEE berdasarkan `master_ct` dan jam kerja aktual, lalu menampilkannya secara langsung.
-6. **Reset Shift**: Jam mencapai 16:00 atau 06:00 (sesuai setting). `api_dashboard.php` mengeksekusi fungsi "Safe Reset". Memindahkan `log_*` ke `history_*`. Mesin memulai produksi dengan counter mulai dari 0 untuk shift berikutnya.
+6. **Reset Shift (Cron/Task Scheduler)**: Pada jam pergantian shift (misal 16:00 atau 06:00), Windows Task Scheduler memicu `cron_reset.php`. Tabel `log_*` yang sangat besar secara background dipindahkan ke `history_*`. Mesin memulai produksi di lembaran tabel baru yang kosong sehingga akses data tetap super cepat.
+
+---
+
+## 🎯 Fitur Khusus: Smart Break (Target-Aware Loss Time)
+
+Sistem OEE CNC dilengkapi dengan algoritma toleransi istirahat otomatis yang menjamin keadilan perhitungan performa (OEE) bagi operator yang bekerja cepat. 
+
+- **Masalah:** Operator yang berhasil menyelesaikan target harian lebih cepat (atau dalam *bucket* jam fleksibel/overlap) sering kali dihukum oleh OEE jika mesin mereka berstatus `Stand By` atau `Mesin Off` di sisa waktu luang mereka.
+- **Solusi Smart Break:** Sistem akan mengevaluasi pencapaian Aktual vs Target di setiap jam. Jika di suatu jam **Aktual $\ge$ Target**, maka sistem akan secara otomatis **menganulir (menghapus)** status-status *downtime* yang bersifat personal/istirahat dari perhitungan *Loss Time* dan *Pareto Chart*.
+- **Daftar Putih (Whitelist) Status yang Dimaafkan:**
+  1. `Stand By`
+  2. `Mesin Off`
+  3. `Toilet`, `Minum`, `Sholat`
+- **Dampak pada OEE:** Karena *Loss Time* personal dianulir saat target tercapai, nilai **Availability** akan tetap 100%. Waktu Operasi (*Operating Time*) tetap utuh, sehingga nilai **Performance** operator bisa meroket secara proporsional hingga di atas 100% (contoh: 115%, 145%) sesuai dengan rasio kecepatan kerja mereka yang melampaui standar *Cycle Time*. 
+- **Catatan Penting:** Kerusakan mesin (`Alarm`, `Problem Mesin`, dll) **TETAP DICATAT** sebagai *Loss Time* mutlak, terlepas dari target tercapai atau tidak, agar tetap masuk laporan Maintenance.
+
+---
+
+## 🕒 Fitur Khusus: Otomatis Lembur (*Sequential Overtime*)
+
+Dashboard OEE dan Grafik History dilengkapi dengan logika perakitan keranjang waktu (bucket) dinamis jika jam produksi mesin melampaui jadwal standar (khususnya untuk *shift* malam dimana admin absen):
+- **Sequential Buckets**: Jika mesin memproduksi barang melebihi jadwal akhir shift (contoh: > 04:30 pagi), sistem akan dengan cerdas menyambung waktu lembur dalam rentang 1 jam berurutan yang menempel erat dari sisa jadwal terakhir (`04:30 - 05:30`, `05:30 - 06:30`, dst).
+- **Anti Tumpang Tindih**: Menghilangkan masalah *visual glitch* grafik bertabrakan/tumpang tindih (overlap) antara jam riil dan jam lembur (menghindari keranjang buatan seperti `04:00 - 05:00` yang menindih `03:30 - 04:30`).
+- **Otomasi Penuh**: Admin tidak perlu lagi menekan tombol 'Quick Action Lembur' secara manual. Selama mesin mencetak produk, grafik *realtime* maupun *history* akan otomatis meregang ke samping secara presisi tanpa campur tangan manusia.
+
+---
+
+## ⚡ Arsitektur Performa Tinggi (Enterprise-Scale)
+
+Untuk mengatasi masalah *hang* / `Connecting to Machine...` yang disebabkan oleh ratusan ribu data per-shift, sistem menggunakan arsitektur performa tinggi:
+
+1. **`delta_prodCount` & MySQL Trigger**: 
+   Database tidak lagi membebani *web server* PHP dengan *loop array* besar untuk menghitung total produk. Kolom `delta_prodCount` merekam penambahan produksi di tingkat DB menggunakan trigger `before_log_quality_insert`. Trigger ini secara otomatis memfilter lonjakan data (*noise*), menangani hitungan *cavity* produk, dan menyimpan selisih penambahan akhir.
+2. **`SUM(delta_prodCount)` Aggregation**: 
+   Script `api_dashboard.php` bekerja dengan sangat cepat (~1 detik) hanya bermodalkan satu perintah SQL Agregat `SUM(delta_prodCount)` dari database.
+3. **Decoupled Background Shift Reset (`cron_reset.php`)**:
+   Logika pembersihan data akhir shift (Safe Reset) sepenuhnya dipisahkan dari frontend dashboard web, untuk mencegah tabel MySQL ter-*lock* saat user sedang mengakses web.
 
 ---
 

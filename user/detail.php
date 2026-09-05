@@ -344,27 +344,103 @@ if ($res_ng && $res_ng->num_rows > 0) {
 $totalScrap = max(0, $totalNG - $totalRepair);
 $totalOK = max(0, $totalProd - $totalScrap);
 
-// 1. Hitung Downtime Historis (Sudah Selesai)
-$res_dt = $conn->query("SELECT COALESCE(SUM(durasi_detik), 0) as total_sec FROM log_downtime WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'");
-$completed_downtime_sec = ($res_dt && $res_dt->num_rows > 0) ? (int)($res_dt->fetch_assoc()['total_sec'] ?? 0) : 0;
+$hourlyCalculatedTarget = [];
+$hourlyTargetSum = [];
+$shift_target = ($shift_aktif === 'OFF SHIFT' || $shift_aktif === 'LEMBUR AKTIF') ? 'SHIFT 1' : $shift_aktif;
+$template_esc = $conn->real_escape_string($template_aktif);
+$shift_esc = $conn->real_escape_string($shift_target);
+$hari_esc = $conn->real_escape_string($hari_aktif);
 
-// 2. Hitung Downtime Aktif (Sedang Berjalan)
+$sql_jam_statis = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$template_esc' AND shift = '$shift_esc' AND (hari = '$hari_esc' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+$res_jam_statis = $conn->query($sql_jam_statis);
+$jamAktif = []; $hourlyActualSum = []; $hourlyTargetSum = []; $jamEfektif = [];
+
+// Helper function to check if a time falls within a range (handles cross-midnight)
+function isTimeInRange($time, $range) {
+    $p = explode('-', $range);
+    if(count($p) !== 2) return false;
+    $start = trim($p[0]) . ":00";
+    $end = trim($p[1]) . ":00";
+    if ($start <= $end) {
+        return ($time >= $start && $time <= $end);
+    } else {
+        return ($time >= $start || $time <= $end);
+    }
+}
+
+// --- SMART STANDBY LOGIC ---
+function isTargetMetAtTime($time_to_check, $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget) {
+    $matched_jam = null;
+    if ($is_lembur && $time_to_check >= $lembur_start_dt && $time_to_check <= $lembur_end_dt) {
+        $matched_jam = $jam_lembur_str;
+    } else {
+        $logTime = date('H:i:s', strtotime($time_to_check));
+        foreach($jamAktif as $jam) {
+            if ($jam == $jam_lembur_str) continue;
+            if (isTimeInRange($logTime, $jam)) {
+                $matched_jam = $jam;
+                break;
+            }
+        }
+    }
+    if ($matched_jam && isset($hourlyActualSum[$matched_jam]) && isset($hourlyCalculatedTarget[$matched_jam])) {
+        // Jika target > 0 dan aktual >= target, maka target tercapai
+        if ($hourlyCalculatedTarget[$matched_jam] > 0 && $hourlyActualSum[$matched_jam] >= $hourlyCalculatedTarget[$matched_jam]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+
+// 1. Hitung Downtime Historis (Sudah Selesai) - SMART STANDBY
+$completed_downtime_sec = 0;
+$pareto_map = [];
+
+// Ambil semua row downtime
+$res_dt_all = $conn->query("SELECT ld.timestamp, ld.kode_dt, ld.durasi_detik, md.label_dt FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
+if ($res_dt_all && $res_dt_all->num_rows > 0) {
+    while ($dt_row = $res_dt_all->fetch_assoc()) {
+        $dt_time = $dt_row['timestamp'];
+        $dt_kode = strtoupper($dt_row['kode_dt']);
+        $dt_label_master = $dt_row['label_dt'];
+        $dt_dur = (int)$dt_row['durasi_detik'];
+        
+        $label = ($dt_kode == 'SB' || $dt_kode == 'STAND BY') ? 'Stand By' : ($dt_kode == 'MESIN OFF' ? 'Mesin Off' : ($dt_label_master ? $dt_label_master : $dt_kode));
+        
+        // Cek apakah target tercapai di jam saat downtime ini terjadi
+        $is_target_met = isTargetMetAtTime($dt_time, $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget);
+        
+        $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+        if ($is_target_met && in_array($label, $forgiven_labels)) {
+            // TARGET TERCAPAI: Abaikan downtime personal/istirahat dari Loss Time
+            continue; 
+        }
+        
+        // Tambahkan ke total loss time historis
+        $completed_downtime_sec += $dt_dur;
+        
+        // Tambahkan ke Pareto
+        if (isset($pareto_map[$label])) {
+            $pareto_map[$label] += $dt_dur;
+        } else {
+            $pareto_map[$label] = $dt_dur;
+        }
+    }
+}
+
+// 2. Hitung Downtime Aktif (Sedang Berjalan) - SMART STANDBY
 $ongoing_downtime_sec = 0;
 $ongoing_dt_label = null;
 
-// Cegah Ghost Downtime tapi hitung saat mesin OFF untuk OEE
 if ($statusTeks != 'RUNNING') {
     if (strcasecmp($infoAsli, 'Mesin Running') == 0 || strcasecmp($infoAsli, 'Running') == 0) {
-        // Kasus Timeout: Mesin dimatikan (misal saat istirahat/pulang).
-        // Jangan dihitung sebagai downtime agar tidak merusak OEE Availability
         $ongoing_downtime_sec = 0;
         $ongoing_dt_label = null;
     } else {
         $infoEsc = $conn->real_escape_string($infoAsli);
         $end_time_expr = ($isTimeout && isset($info['last_ts'])) ? "'{$info['last_ts']}'" : "NOW()";
         
-        // FIX: Cari waktu mulai downtime saat ini dengan lebih akurat
-        // Langkah 1: Cari log terakhir dimana mcInfo BERBEDA dari status saat ini (= titik mulai downtime ini)
         $sql_start = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo != '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp DESC LIMIT 1";
         $res_start = $conn->query($sql_start);
         $downtime_start_ts = null;
@@ -372,14 +448,11 @@ if ($statusTeks != 'RUNNING') {
         if ($res_start && $res_start->num_rows > 0) {
             $downtime_start_ts = $res_start->fetch_assoc()['timestamp'];
         } else {
-            // Langkah 2: Tidak ada log dengan status berbeda => status ini sudah dari awal shift
-            // Cari log pertama dengan status yang sama
             $sql_first = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo = '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC LIMIT 1";
             $res_first = $conn->query($sql_first);
             if ($res_first && $res_first->num_rows > 0) {
                 $downtime_start_ts = $res_first->fetch_assoc()['timestamp'];
             } else {
-                // Langkah 3: Tidak ada log sama sekali => gunakan waktu mulai shift
                 $downtime_start_ts = $waktu_mulai;
             }
         }
@@ -388,22 +461,30 @@ if ($statusTeks != 'RUNNING') {
             $sql_ongoing = "SELECT TIMESTAMPDIFF(SECOND, '$downtime_start_ts', $end_time_expr) as active_sec";
             $res_ongoing = $conn->query($sql_ongoing);
             if ($res_ongoing && $res_ongoing->num_rows > 0) {
-                $ongoing_downtime_sec = max(0, (int)$res_ongoing->fetch_assoc()['active_sec']);
-            }
-        }
-        
-        // FIX: Gunakan label yang konsisten dengan pareto chart
-        // Cari kode_dt dan label_dt dari master_downtime agar cocok dengan pareto query
-        $ongoing_dt_label = $infoAsli;
-        $sql_dt_label = "SELECT kode_dt, label_dt FROM master_downtime WHERE kode_dt = '$infoEsc' OR label_dt = '$infoEsc' LIMIT 1";
-        $res_dt_label = $conn->query($sql_dt_label);
-        if ($res_dt_label && $res_dt_label->num_rows > 0) {
-            $dt_row = $res_dt_label->fetch_assoc();
-            $ongoing_dt_label = $dt_row['label_dt']; // Gunakan label_dt yang sama dengan pareto
-        } else {
-            // Fallback: kode 'SB' untuk Stand By (tidak ada di master_downtime)
-            if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
-                $ongoing_dt_label = 'Stand By';
+                $raw_ongoing = max(0, (int)$res_ongoing->fetch_assoc()['active_sec']);
+                
+                $ongoing_dt_label = $infoAsli;
+                $sql_dt_label = "SELECT kode_dt, label_dt FROM master_downtime WHERE kode_dt = '$infoEsc' OR label_dt = '$infoEsc' LIMIT 1";
+                $res_dt_label = $conn->query($sql_dt_label);
+                if ($res_dt_label && $res_dt_label->num_rows > 0) {
+                    $dt_row = $res_dt_label->fetch_assoc();
+                    $ongoing_dt_label = $dt_row['label_dt'];
+                } else {
+                    if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
+                        $ongoing_dt_label = 'Stand By';
+                    }
+                }
+                
+                // Cek apakah target tercapai saat ini
+                $current_is_target_met = isTargetMetAtTime(date('Y-m-d H:i:s'), $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget);
+                
+                $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+                if ($current_is_target_met && in_array($ongoing_dt_label, $forgiven_labels)) {
+                    // TARGET TERCAPAI: Abaikan downtime personal/istirahat Berjalan
+                    $ongoing_downtime_sec = 0;
+                } else {
+                    $ongoing_downtime_sec = $raw_ongoing;
+                }
             }
         }
     }
@@ -454,27 +535,6 @@ foreach ($opSessions as $ses) {
     ];
 }
 
-$shift_target = ($shift_aktif === 'OFF SHIFT' || $shift_aktif === 'LEMBUR AKTIF') ? 'SHIFT 1' : $shift_aktif;
-$template_esc = $conn->real_escape_string($template_aktif);
-$shift_esc = $conn->real_escape_string($shift_target);
-$hari_esc = $conn->real_escape_string($hari_aktif);
-
-$sql_jam_statis = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$template_esc' AND shift = '$shift_esc' AND (hari = '$hari_esc' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
-$res_jam_statis = $conn->query($sql_jam_statis);
-$jamAktif = []; $hourlyActualSum = []; $hourlyTargetSum = []; $jamEfektif = [];
-
-// Helper function to check if a time falls within a range (handles cross-midnight)
-function isTimeInRange($time, $range) {
-    $p = explode('-', $range);
-    if(count($p) !== 2) return false;
-    $start = trim($p[0]) . ":00";
-    $end = trim($p[1]) . ":00";
-    if ($start <= $end) {
-        return ($time >= $start && $time <= $end);
-    } else {
-        return ($time >= $start || $time <= $end);
-    }
-}
 
 function getDurationHours($rangeStr) {
     $p = explode('-', $rangeStr);
@@ -569,6 +629,64 @@ if ($res_logs && $res_logs->num_rows > 0) {
                 if (isTimeInRange($logTime, $jam)) {
                     $matched_jam = $jam;
                     break;
+                }
+            }
+        }
+        
+        // JIKA DILUAR TEMPLATE DAN BUKAN QUICK ACTION, AUTO-GENERATE JAM LEMBUR
+        if (!$matched_jam) {
+            $last_end = null;
+            if (!empty($jamAktif)) {
+                $last_bucket = end($jamAktif);
+                if ($last_bucket == $jam_lembur_str && count($jamAktif) > 1) {
+                    $last_bucket = $jamAktif[count($jamAktif)-2]; // Ambil sebelum lembur quick action
+                }
+                $p = explode('-', $last_bucket);
+                if (count($p) == 2) $last_end = trim($p[1]);
+            }
+            
+            if ($last_end) {
+                // Generate sequential buckets until we find the one containing logTime
+                $s_time = strtotime($last_end . ":00");
+                $log_ts_check = strtotime($logTime);
+                if ($log_ts_check < $s_time) {
+                    $log_ts_check += 86400; // cross midnight fix untuk perbandingan
+                }
+                
+                $loops = 0;
+                while($loops < 10) {
+                    $e_time = strtotime("+1 hour", $s_time);
+                    $start = date('H:i', $s_time);
+                    $end = date('H:i', $e_time);
+                    $new_bucket = "$start - $end";
+                    
+                    if (!in_array($new_bucket, $jamAktif)) {
+                        $jamAktif[] = $new_bucket;
+                        $hourlyActualSum[$new_bucket] = 0;
+                        $hourlyTargetSum[$new_bucket] = 0;
+                        if (isset($jamEfektif)) $jamEfektif[$new_bucket] = 60; // 60 menit efektif
+                    }
+                    
+                    if (isTimeInRange($logTime, $new_bucket)) {
+                        $matched_jam = $new_bucket;
+                        break;
+                    }
+                    $s_time = $e_time;
+                    $loops++;
+                }
+            }
+            
+            if (!$matched_jam) {
+                $hour = (int)date('H', strtotime($logTime));
+                $start = str_pad($hour, 2, '0', STR_PAD_LEFT).":00";
+                $end = str_pad($hour+1, 2, '0', STR_PAD_LEFT).":00";
+                if($hour == 23) $end = "23:59";
+                $matched_jam = "$start - $end";
+                if (!in_array($matched_jam, $jamAktif)) {
+                    $jamAktif[] = $matched_jam;
+                    $hourlyActualSum[$matched_jam] = 0;
+                    $hourlyTargetSum[$matched_jam] = 0;
+                    if (isset($jamEfektif)) $jamEfektif[$matched_jam] = 60;
                 }
             }
         }
@@ -685,14 +803,6 @@ if (empty($tableData)) {
 
 
 
-$res_pareto = $conn->query("SELECT CASE WHEN ld.kode_dt = 'SB' THEN 'Stand By' WHEN ld.kode_dt = 'Mesin Off' THEN 'Mesin Off' ELSE COALESCE(md.label_dt, ld.kode_dt) END as label_downtime, SUM(ld.durasi_detik) as total_detik FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai' GROUP BY label_downtime ORDER BY total_detik DESC");
-
-$pareto_map = [];
-if ($res_pareto && $res_pareto->num_rows > 0) { 
-    while($pRow = $res_pareto->fetch_assoc()) { 
-        $pareto_map[$pRow['label_downtime']] = (int)$pRow['total_detik']; 
-    } 
-}
 
 // Inject ongoing downtime to Pareto array
 if ($ongoing_downtime_sec > 0 && $ongoing_dt_label) {
