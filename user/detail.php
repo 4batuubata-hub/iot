@@ -620,6 +620,10 @@ if ($res_logs && $res_logs->num_rows > 0) {
         $true_total_prod += $qty_added;
         $prev_prodCount = $curr_prodCount;
 
+        if ($qty_added == 0) {
+            continue; // OPTIMASI: Lompati bucketing yang memakan CPU time jika tidak ada penambahan qty
+        }
+
         $matched_jam = null;
         if ($is_lembur && $row['timestamp'] >= $lembur_start_dt && $row['timestamp'] <= $lembur_end_dt) {
             $matched_jam = $jam_lembur_str;

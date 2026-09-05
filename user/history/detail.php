@@ -227,6 +227,11 @@ if ($res_logs && $res_logs->num_rows > 0) {
             $opHistoryData[$op_nik]['total_qty'] += $qty_added;
         }
 
+        // OPTIMASI: Lompati bucketing yang memakan CPU time jika tidak ada penambahan qty
+        if ($qty_added == 0) {
+            continue; 
+        }
+
         // Bucketing
         $matched_jam = null;
         foreach($jamAktif as $jam) {
