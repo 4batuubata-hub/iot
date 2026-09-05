@@ -509,7 +509,7 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
     <div class="header">
         <div class="header-left">
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-            <a href="<?= BASE_URL ?>user/index.php" class="btn-back">← Kembali ke History</a>
+            <a href="index.php" onclick="history.length > 1 ? history.back() : window.location.href='index.php'; return false;" class="btn-back">← Kembali ke History</a>
         </div>
         <div style="text-align:center; flex-grow:1;">
             <h2 style="margin:0;">📜 ARSIP: <?= htmlspecialchars($mcID) ?> 
