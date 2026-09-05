@@ -1,0 +1,61 @@
+=============================================================================
+DOKUMEN CATATAN PERKEMBANGAN SISTEM (ISSUE, BUG, DAN FITUR)
+=============================================================================
+File ini berfungsi sebagai rekam jejak (changelog) untuk mendokumentasikan 
+setiap permasalahan (issue/bug) yang ditemukan pada sistem, serta perbaikan 
+dan penambahan fitur baru yang telah diimplementasikan. Dengan adanya log ini, 
+diharapkan proses tracking, maintenance, dan pengembangan aplikasi ke depannya 
+dapat dilakukan dengan lebih terstruktur, mudah dilacak, dan transparan.
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 05 September 2026, 20:53 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Sistem Reset Data Bermasalah:
+   Terdapat kendala pada proses reset data mesin secara otomatis yang menyebabkan 
+   data produksi bertumpuk dan menjadi satu rekam jejak panjang (mega-blob) selama 
+   kurang lebih 9 hari ke belakang tanpa jeda shift harian. Hal ini menyebabkan
+   tampilan pada history/index.php hanya memunculkan 1 buah kartu untuk 9 hari produksi.
+   
+2. Data Produksi Negatif / Integer Overflow (Anomali 32K):
+   Terjadi anomali pada pengiriman data dari hardware (ESP32) dimana jumlah produksi 
+   menembus batas integer 16-bit sehingga terbaca bernilai negatif ekstrim (misal: -32304).
+   Hal ini mengacaukan perhitungan selisih (delta) di sisi web, menghasilkan pembacaan
+   jumlah barang yang sangat tidak masuk akal (melambung hingga lebih dari 15.000 Pcs dalam satu jam).
+   
+3. Overtime (Lemburan) Manual:
+   Pembuatan sesi jam untuk lembur sebelumnya masih bergantung pada konfigurasi jadwal statis
+   saja dan membutuhkan campur tangan / tidak berjalan mulus apabila proses produksi 
+   melebihi jam kerja standar.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Automasi Sistem Reset via Cron Scheduler (Windows Task Scheduler):
+   - Memisahkan logika reset dari dashboard utama menjadi script independen (cron_reset.php).
+   - Menambahkan file batch otomatis (setup_cron.bat) untuk memasang jadwal eksekusi
+     reset harian di Windows Task Scheduler agar berjalan otomatis secara stabil 
+     pada pukul 07:30 pagi setiap harinya (mencakup seluruh data hari sebelumnya).
+
+2. Sanitasi Hardware Data dan Database Trigger:
+   - Menanamkan fitur proteksi pada Database (Trigger "before_log_quality_insert") 
+     untuk mem-filter setiap data negatif yang masuk, mengubahnya ke angka 0. Hal ini
+     menjamin data anomali serupa tidak akan merusak perhitungan web di masa depan.
+   - Telah dilakukan pembersihan massal secara retroaktif pada data historis (history_quality)
+     untuk menetralkan seluruh lonjakan angka anomali yang sempat tercatat.
+
+3. Restrukturisasi dan Pemecahan Sejarah Data (Data Slicing):
+   - Skrip khusus telah dijalankan pada ke-27 mesin untuk mengekstrak, memecah, dan 
+     mendistribusikan ulang rekaman 9 hari yang tergabung tersebut. 
+   - Hasilnya, data history/index.php telah pulih dan menampilkan riwayat produksi
+     secara rapi terbagi dalam Shift 1 dan Shift 2 per harinya. Kalkulasi per-jam pada 
+     history/detail.php pun kembali normal.
+
+4. Dynamic Sequential Overtime (Lembur Otomatis):
+   - Modifikasi logika pembentukan jam keranjang produksi (buckets). Jika shift telah
+     habis (misal jam 04:30), namun masih ada aktivitas mesin (hingga 07:30), sistem
+     akan otomatis membuatkan ekstensi jam kelanjutan (contoh: 04:30 - 05:30) 
+     tanpa mengharuskan Admin menambahkannya secara manual.
+     
+Status: RESOLVED & DEPLOYED.
+=============================================================================
