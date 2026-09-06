@@ -240,18 +240,33 @@ if ($result && $result->num_rows > 0) {
             else { $catStatus = 'OFF'; $statusText = "OFF"; $statusClass = "status-off"; }
         }
 
-        // 1. Ambil Data Downtime Historis (Gabungkan Semua)
-        $sql_all_dt = "SELECT COALESCE(SUM(durasi_detik), 0) as total_dt FROM log_downtime WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
-        $total_loss_detik = ($conn->query($sql_all_dt)->fetch_assoc()['total_dt']) ?? 0;
+        // 1. Ambil Data Downtime Historis & Kategorikan
+        $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+        $sql_dt_details = "SELECT ld.kode_dt, md.label_dt, ld.durasi_detik FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'";
+        $res_dt_details = $conn->query($sql_dt_details);
+        $historical_real_dt = 0;
+        $historical_whitelist_dt = 0;
+        if ($res_dt_details && $res_dt_details->num_rows > 0) {
+            while($dt_row = $res_dt_details->fetch_assoc()) {
+                $lbl = (strtoupper($dt_row['kode_dt']) == 'SB' || strtoupper($dt_row['kode_dt']) == 'STAND BY') ? 'Stand By' : (strtoupper($dt_row['kode_dt']) == 'MESIN OFF' ? 'Mesin Off' : ($dt_row['label_dt'] ? $dt_row['label_dt'] : $dt_row['kode_dt']));
+                if (in_array($lbl, $forgiven_labels)) {
+                    $historical_whitelist_dt += $dt_row['durasi_detik'];
+                } else {
+                    $historical_real_dt += $dt_row['durasi_detik'];
+                }
+            }
+        }
 
         // 2. Ambil Data Downtime Real-Time (Ongoing)
+        $ongoing_real_dt = 0;
+        $ongoing_whitelist_dt = 0;
+        
         if ($catStatus != 'RUNNING' && $catStatus != 'OFF SHIFT') {
             if (strcasecmp($infoAsli, 'Mesin Running') != 0 && strcasecmp($infoAsli, 'Running') != 0) {
                 $infoEsc = $conn->real_escape_string($infoAsli);
                 $end_time_expr = ($isTimeout && isset($row['last_ts'])) ? "'{$row['last_ts']}'" : "NOW()";
                 
                 // Cari waktu mulai downtime saat ini dengan lebih akurat
-                // Langkah 1: Cari log terakhir dimana mcInfo BERBEDA
                 $sql_start = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo != '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp DESC LIMIT 1";
                 $res_start = $conn->query($sql_start);
                 $downtime_start_ts = null;
@@ -259,13 +274,11 @@ if ($result && $result->num_rows > 0) {
                 if ($res_start && $res_start->num_rows > 0) {
                     $downtime_start_ts = $res_start->fetch_assoc()['timestamp'];
                 } else {
-                    // Langkah 2: Cari log pertama dengan status yang sama
                     $sql_first = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo = '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC LIMIT 1";
                     $res_first = $conn->query($sql_first);
                     if ($res_first && $res_first->num_rows > 0) {
                         $downtime_start_ts = $res_first->fetch_assoc()['timestamp'];
                     } else {
-                        // Langkah 3: Gunakan waktu mulai shift
                         $downtime_start_ts = $waktu_mulai;
                     }
                 }
@@ -275,11 +288,37 @@ if ($result && $result->num_rows > 0) {
                     $res_ongoing = $conn->query($sql_ongoing);
                     if ($res_ongoing && $res_ongoing->num_rows > 0) {
                         $ongoing_sec = max(0, (int)$res_ongoing->fetch_assoc()['active_sec']);
-                        $total_loss_detik += $ongoing_sec;
+                        
+                        $ongoing_lbl = $infoAsli;
+                        $res_ongoing_lbl = $conn->query("SELECT label_dt FROM master_downtime WHERE kode_dt = '$infoEsc' OR label_dt = '$infoEsc' LIMIT 1");
+                        if ($res_ongoing_lbl && $res_ongoing_lbl->num_rows > 0) {
+                            $ongoing_lbl = $res_ongoing_lbl->fetch_assoc()['label_dt'];
+                        } else if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
+                            $ongoing_lbl = 'Stand By';
+                        } else if (strtoupper($infoAsli) == 'MESIN OFF') {
+                            $ongoing_lbl = 'Mesin Off';
+                        }
+                        
+                        if (in_array($ongoing_lbl, $forgiven_labels)) {
+                            $ongoing_whitelist_dt += $ongoing_sec;
+                        } else {
+                            $ongoing_real_dt += $ongoing_sec;
+                        }
                     }
                 }
             }
         }
+        
+        // 3. Terapkan Logika Proportional Smart Break
+        $ideal_ct = (float)($row['ct_pcs'] ?? 0);
+        $total_real_dt = $historical_real_dt + $ongoing_real_dt;
+        $total_whitelist_dt = $historical_whitelist_dt + $ongoing_whitelist_dt;
+        
+        $ideal_time_sec = $prodCount * $ideal_ct;
+        $allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $total_real_dt);
+        $final_whitelist_dt = min($total_whitelist_dt, $allowed_whitelist_sec);
+        
+        $total_loss_detik = $total_real_dt + $final_whitelist_dt;
 
         // 3. Perbaiki Rumus Operating Time (Semua losstime mengurangi availability)
         $operating_time_seconds = $ppt_seconds - $total_loss_detik;

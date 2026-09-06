@@ -393,45 +393,40 @@ function isTargetMetAtTime($time_to_check, $jamAktif, $lembur_start_dt, $lembur_
 }
 
 
-// 1. Hitung Downtime Historis (Sudah Selesai) - SMART STANDBY
+// 1. Hitung Downtime Historis - PROPORTIONAL SMART BREAK
 $completed_downtime_sec = 0;
 $pareto_map = [];
+$whitelist_pareto_map = [];
+
+$forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+$historical_real_dt = 0;
+$historical_whitelist_dt = 0;
 
 // Ambil semua row downtime
 $res_dt_all = $conn->query("SELECT ld.timestamp, ld.kode_dt, ld.durasi_detik, md.label_dt FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
 if ($res_dt_all && $res_dt_all->num_rows > 0) {
     while ($dt_row = $res_dt_all->fetch_assoc()) {
-        $dt_time = $dt_row['timestamp'];
         $dt_kode = strtoupper($dt_row['kode_dt']);
         $dt_label_master = $dt_row['label_dt'];
         $dt_dur = (int)$dt_row['durasi_detik'];
         
         $label = ($dt_kode == 'SB' || $dt_kode == 'STAND BY') ? 'Stand By' : ($dt_kode == 'MESIN OFF' ? 'Mesin Off' : ($dt_label_master ? $dt_label_master : $dt_kode));
         
-        // Cek apakah target tercapai di jam saat downtime ini terjadi
-        $is_target_met = isTargetMetAtTime($dt_time, $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget);
-        
-        $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
-        if ($is_target_met && in_array($label, $forgiven_labels)) {
-            // TARGET TERCAPAI: Abaikan downtime personal/istirahat dari Loss Time
-            continue; 
-        }
-        
-        // Tambahkan ke total loss time historis
-        $completed_downtime_sec += $dt_dur;
-        
-        // Tambahkan ke Pareto
-        if (isset($pareto_map[$label])) {
-            $pareto_map[$label] += $dt_dur;
+        if (in_array($label, $forgiven_labels)) {
+            $historical_whitelist_dt += $dt_dur;
+            $whitelist_pareto_map[$label] = ($whitelist_pareto_map[$label] ?? 0) + $dt_dur;
         } else {
-            $pareto_map[$label] = $dt_dur;
+            $historical_real_dt += $dt_dur;
+            $pareto_map[$label] = ($pareto_map[$label] ?? 0) + $dt_dur;
         }
     }
 }
 
-// 2. Hitung Downtime Aktif (Sedang Berjalan) - SMART STANDBY
+// 2. Hitung Downtime Aktif (Sedang Berjalan) - PROPORTIONAL SMART BREAK
 $ongoing_downtime_sec = 0;
 $ongoing_dt_label = null;
+$ongoing_real_dt = 0;
+$ongoing_whitelist_dt = 0;
 
 if ($statusTeks != 'RUNNING') {
     if (strcasecmp($infoAsli, 'Mesin Running') == 0 || strcasecmp($infoAsli, 'Running') == 0) {
@@ -472,26 +467,63 @@ if ($statusTeks != 'RUNNING') {
                 } else {
                     if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
                         $ongoing_dt_label = 'Stand By';
+                    } else if (strtoupper($infoAsli) == 'MESIN OFF') {
+                        $ongoing_dt_label = 'Mesin Off';
                     }
                 }
                 
-                // Cek apakah target tercapai saat ini
-                $current_is_target_met = isTargetMetAtTime(date('Y-m-d H:i:s'), $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget);
-                
-                $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
-                if ($current_is_target_met && in_array($ongoing_dt_label, $forgiven_labels)) {
-                    // TARGET TERCAPAI: Abaikan downtime personal/istirahat Berjalan
-                    $ongoing_downtime_sec = 0;
+                if (in_array($ongoing_dt_label, $forgiven_labels)) {
+                    $ongoing_whitelist_dt += $raw_ongoing;
+                    $whitelist_pareto_map[$ongoing_dt_label] = ($whitelist_pareto_map[$ongoing_dt_label] ?? 0) + $raw_ongoing;
                 } else {
-                    $ongoing_downtime_sec = $raw_ongoing;
+                    $ongoing_real_dt += $raw_ongoing;
+                    $pareto_map[$ongoing_dt_label] = ($pareto_map[$ongoing_dt_label] ?? 0) + $raw_ongoing;
                 }
             }
         }
     }
 }
 
-// 3. Gabungkan untuk UI Total Losstime
-$totalLosstimeMenit = round(($completed_downtime_sec + $ongoing_downtime_sec) / 60);
+// 3. Terapkan Proportional Smart Break
+$current_ts = time();
+$ppt_seconds = 0;
+foreach($jamAktif as $jam) {
+    $eff_min = $jamEfektif[$jam] ?? 0;
+    if ($eff_min > 0) {
+        $p = explode('-', $jam);
+        if(count($p) == 2) {
+            $s_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[0]) . ':00');
+            $e_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[1]) . ':00');
+            if ($e_time < $s_time) $e_time += 86400;
+            if ($s_time < strtotime($waktu_mulai)) { $s_time += 86400; $e_time += 86400; }
+            
+            $slot_dur = $e_time - $s_time;
+            if ($current_ts > $s_time) {
+                $elapsed = min($current_ts, $e_time) - $s_time;
+                if ($slot_dur > 0) {
+                    $ppt_seconds += ($elapsed / $slot_dur) * ($eff_min * 60);
+                }
+            }
+        }
+    }
+}
+
+$total_real_dt = $historical_real_dt + $ongoing_real_dt;
+$total_whitelist_dt = $historical_whitelist_dt + $ongoing_whitelist_dt;
+
+$ideal_time_sec = $totalProd * $ctPcs;
+$allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $total_real_dt);
+$final_whitelist_dt = min($total_whitelist_dt, $allowed_whitelist_sec);
+
+// Proporsikan whitelist pareto map
+if ($total_whitelist_dt > 0 && $final_whitelist_dt > 0) {
+    $scale_factor = $final_whitelist_dt / $total_whitelist_dt;
+    foreach ($whitelist_pareto_map as $wl_label => $wl_dur) {
+        $pareto_map[$wl_label] = ($pareto_map[$wl_label] ?? 0) + round($wl_dur * $scale_factor);
+    }
+}
+
+$totalLosstimeMenit = round(($total_real_dt + $final_whitelist_dt) / 60);
 $res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, mc.part_name as log_part_name, mc.part_number as log_part_number, mc.proses_description as log_proses_desc, COALESCE(SUM(CASE WHEN ln.qty_ng > 0 THEN ln.qty_ng ELSE 0 END), 0) as qty_ng_plus, COALESCE(SUM(CASE WHEN ln.qty_ng < 0 THEN ABS(ln.qty_ng) ELSE 0 END), 0) as qty_repair, COALESCE(SUM(ln.qty_ng), 0) as net_scrap FROM log_ng ln LEFT JOIN master_defect md ON ln.kode_ng = md.kode_defect LEFT JOIN master_ct mc ON ln.kode_proses = mc.kode WHERE ln.mcID = '$mcID' AND ln.timestamp >= '$waktu_mulai' AND ln.timestamp <= '$waktu_selesai' GROUP BY ln.kode_proses, ln.kode_ng, md.keterangan, mc.part_name, mc.part_number, mc.proses_description");
 $res_logs_op = $conn->query("SELECT timestamp, op_NIK, prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC, id ASC");
 $opSessions = [];

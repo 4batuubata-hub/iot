@@ -78,12 +78,13 @@ Sistem OEE CNC dilengkapi dengan algoritma toleransi istirahat otomatis yang men
 
 ---
 
-## 🕒 Fitur Khusus: Otomatis Lembur (*Sequential Overtime*)
+## 🕒 Fitur Khusus: Otomatis Lembur (*Sequential Overtime* & Sapu Ranjau)
 
 Dashboard OEE dan Grafik History dilengkapi dengan logika perakitan keranjang waktu (bucket) dinamis jika jam produksi mesin melampaui jadwal standar (khususnya untuk *shift* malam dimana admin absen):
 - **Sequential Buckets**: Jika mesin memproduksi barang melebihi jadwal akhir shift (contoh: > 04:30 pagi), sistem akan dengan cerdas menyambung waktu lembur dalam rentang 1 jam berurutan yang menempel erat dari sisa jadwal terakhir (`04:30 - 05:30`, `05:30 - 06:30`, dst).
 - **Anti Tumpang Tindih**: Menghilangkan masalah *visual glitch* grafik bertabrakan/tumpang tindih (overlap) antara jam riil dan jam lembur (menghindari keranjang buatan seperti `04:00 - 05:00` yang menindih `03:30 - 04:30`).
-- **Otomasi Penuh**: Admin tidak perlu lagi menekan tombol 'Quick Action Lembur' secara manual. Selama mesin mencetak produk, grafik *realtime* maupun *history* akan otomatis meregang ke samping secara presisi tanpa campur tangan manusia.
+- **Smart Auto-Lembur (Sapu Ranjau)**: Sistem reset shift (`cron_reset.php`) sekarang bersifat per-mesin, bukan global. Mesin yang melakukan "lembur siluman" (tetap produksi setelah jadwal habis tanpa lapor) tidak akan terpotong datanya jika cron berjalan. Mesin tersebut hanya akan direset (Sapu Ranjau) jika mesin telah menganggur (idle) selama minimal 15 menit setelah waktu operasi terakhirnya, dan waktu tersebut sudah melewati batas jadwal shift normalnya.
+- **Data Proportionality (Capping)**: Jika sebuah mesin lembur sampai jam 17:30 dan cron baru mengeksekusi reset pada jam 18:00, maka durasi `losstime` antara 17:30 - 18:00 tidak akan dibebankan pada shift tersebut. Waktu akhir shift (*End Shift*) akan dikunci/di-cap pada pukul 17:30 sesuai dengan jejak produksi terakhir mesin.
 
 ---
 

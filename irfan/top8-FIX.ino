@@ -200,10 +200,10 @@ String previousMcStatus = "off";       // Status sebelumnya (untuk deteksi trans
 String previousMcInfo   = "Stand By";  // Info sebelumnya
 
 // --- Counter Produksi ---
-int prodCount = 0;   // Total produksi
-int NGCount   = 0;   // Total NG
-int OKCount   = 0;   // OK = prodCount - NGCount
-unsigned int cycleCountSaved    = 0;  // Offset Nano
+unsigned long prodCount = 0;   // Total produksi
+unsigned long NGCount   = 0;   // Total NG
+unsigned long OKCount   = 0;   // OK = prodCount - NGCount
+unsigned long cycleCountSaved    = 0;  // Offset Nano
 unsigned int cycleCountReceived = 0;  // Counter dari Nano
 int cavity = 1;              // Cavity (default 1, bisa diubah dari proses)
 
@@ -237,8 +237,8 @@ String lastPartID     = "";
 String lastProsesDesc = "";
 String lastmcInfo     = "";
 String lastop_NIK     = "";
-int lastOKCount = 9999;  // Inisialisasi berbeda agar force update pertama kali
-int lastNGCount = 9999;
+unsigned long lastOKCount = 9999;  // Inisialisasi berbeda agar force update pertama kali
+unsigned long lastNGCount = 9999;
 
 // --- Variabel Tombol & Debounce ---
 unsigned long ngSubPressTime    = 0;     // Waktu awal tombol NG- ditekan
@@ -906,15 +906,38 @@ void loop() {
     lastNanoRead = currentMillis;
     unsigned int rawCounter = readCounterFromNano();
     
-    // --- FITUR ANTI-DROP COUNTER ---
-    // Jika counter dari Nano tiba-tiba mengecil (misal dari 25 jadi 0 karena Nano restart akibat EMI),
-    // kita menjumlahkan total sebelumnya ke dalam cycleCountSaved agar produksi tidak turun.
-    if (rawCounter < cycleCountReceived && !(cycleCountReceived == 65535 && rawCounter == 0)) {
-       unsigned int gap = cycleCountReceived - rawCounter;
-       cycleCountSaved = cycleCountSaved + gap;  // Logika Addition (sama seperti smart_oee)
-       Serial.print(F("[WARNING] Nano Counter Drop Detected! Gap: ")); Serial.println(gap);
+    // --- FITUR ANTI-GLITCH & ANTI-DROP COUNTER ---
+    static byte zeroCount = 0;
+    if (rawCounter > 0) zeroCount = 0; // Reset counter jika mesin jalan
+
+    // 1. Filter I2C Disconnect (Biasanya terbaca 65535)
+    if (rawCounter == 65535) {
+       Serial.println(F("[ERROR] I2C 65535 Glitch Ignored!"));
     }
-    cycleCountReceived = rawCounter;
+    // 2. Deteksi Penurunan (Drop)
+    else if (rawCounter < cycleCountReceived) {
+       if (rawCounter == 0) {
+          zeroCount++;
+          // Wajib 2 detik berturut-turut membaca 0 baru diakui sebagai restart alat yang sah
+          if (zeroCount >= 2) {
+             unsigned int gap = cycleCountReceived - rawCounter;
+             cycleCountSaved = cycleCountSaved + gap;
+             cycleCountReceived = rawCounter;
+             Serial.print(F("[WARNING] Nano Restart Confirmed! Gap: ")); Serial.println(gap);
+          }
+       } else {
+          Serial.print(F("[ERROR] I2C Minor Drop Glitch Ignored! Raw: ")); Serial.println(rawCounter);
+       }
+    }
+    // 3. Deteksi Kenaikan (Spike)
+    else if (rawCounter > cycleCountReceived) {
+       // Mustahil mesin mencetak > 500 barang dalam jeda polling (1 detik atau saat lag jaringan 15 dtk).
+       if ((rawCounter - cycleCountReceived) > 500) {
+          Serial.print(F("[ERROR] I2C EMI Spike Glitch Ignored! Raw: ")); Serial.println(rawCounter);
+       } else {
+          cycleCountReceived = rawCounter;
+       }
+    }
     
     // DEBUG: Tampilkan data asli Nano ke Serial Monitor
     Serial.print(F("[DEBUG] Raw Nano: ")); 
@@ -923,7 +946,7 @@ void loop() {
     Serial.print(cycleCountSaved);
       
       // Perhitungan produksi: akumulasi history + pembacaan sekarang
-      unsigned int cycleCount = cycleCountSaved + cycleCountReceived;
+      unsigned long cycleCount = cycleCountSaved + cycleCountReceived;
       prodCount = cycleCount * cavity;
       OKCount = prodCount - NGCount;
 

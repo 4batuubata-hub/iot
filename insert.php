@@ -29,7 +29,7 @@ if ($data) {
         $current_info = trim($mcInfo);
         
         if ($last_info !== $current_info) {
-            $non_downtime = ['Mesin Running', 'Running', 'Mesin Off', 'Off'];
+            $non_downtime = ['Mesin Running', 'Running', 'Off'];
             // Jika status sebelumnya BUKAN 'Mesin Running' dll, berarti itu adalah downtime
             if (!in_array($last_info, $non_downtime, true)) {
                 $last_info_esc = $conn->real_escape_string($last_info);

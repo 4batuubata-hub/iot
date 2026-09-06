@@ -100,9 +100,8 @@ $totalNG = $summary['total_ng'] ?? 0;
 $totalRepair = 0; 
 $totalScrap = $totalNG - $totalRepair;
 
-// Safe query for losstime
-$res_losstime = $conn->query("SELECT COALESCE(SUM(hd.durasi_detik), 0) as total_sec FROM history_downtime hd WHERE hd.mcID = '$mcID' AND $filter_waktu_hd");
-$totalLosstimeMenit = ($res_losstime && $res_losstime->num_rows > 0) ? round(($res_losstime->fetch_assoc()['total_sec'] ?? 0) / 60) : 0;
+// Safe query for losstime - WILL BE OVERWRITTEN LATER BY PROPORTIONAL CALCULATION
+$totalLosstimeMenit = 0;
 
 $res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, COALESCE(SUM(hn.qty_ng), 0) as qty FROM history_ng hn LEFT JOIN master_defect md ON hn.kode_ng = md.kode_defect WHERE hn.mcID = '$mcID' AND $filter_waktu_hn GROUP BY hn.kode_ng, md.keterangan");
 // Operator Names mapping for dynamic history
@@ -144,11 +143,13 @@ if ($shift_aktif == 'REKAP HARIAN' || $shift_aktif == 'ALL') {
     $template_esc = $conn->real_escape_string($template_aktif);
     $shift_esc = $conn->real_escape_string($shift_aktif);
     $hari_esc = $conn->real_escape_string($hari_aktif);
-    $sql_jam_statis = "SELECT rentang_jam FROM master_jam_statis WHERE nama_template = '$template_esc' AND shift = '$shift_esc' AND (hari = '$hari_esc' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+    $sql_jam_statis = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$template_esc' AND shift = '$shift_esc' AND (hari = '$hari_esc' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
     $res_jam_statis = $conn->query($sql_jam_statis);
+    $jamEfektif = [];
     if ($res_jam_statis && $res_jam_statis->num_rows > 0) {
         while($rowJ = $res_jam_statis->fetch_assoc()) { 
             $jamAktif[] = $rowJ['rentang_jam']; 
+            $jamEfektif[$rowJ['rentang_jam']] = (int)$rowJ['menit_efektif'];
         }
     } else {
         // Fallback jika tidak ada template
@@ -402,7 +403,78 @@ $totalColumns = count($jamAktifFinal) + 4; // Part Name + Part Number + Proses (
 
 $res_pareto = $conn->query("SELECT CASE WHEN hd.kode_dt = 'SB' THEN 'Stand By' WHEN hd.kode_dt = 'Mesin Off' THEN 'Mesin Off' ELSE COALESCE(md.label_dt, hd.kode_dt) END as label_downtime, SUM(hd.durasi_detik) as total_detik FROM history_downtime hd LEFT JOIN master_downtime md ON hd.kode_dt = md.kode_dt WHERE hd.mcID = '$mcID' AND $filter_waktu_hd GROUP BY label_downtime ORDER BY total_detik DESC");
 $paretoLabels = []; $paretoValues = [];
-if ($res_pareto && $res_pareto->num_rows > 0) { while($pRow = $res_pareto->fetch_assoc()) { $paretoLabels[] = $pRow['label_downtime']; $paretoValues[] = (int)$pRow['total_detik']; } }
+
+// --- PROPORTIONAL SMART BREAK ---
+$forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+$historical_real_dt = 0;
+$historical_whitelist_dt = 0;
+$whitelist_pareto_map = [];
+$pareto_map = [];
+
+if ($res_pareto && $res_pareto->num_rows > 0) { 
+    while($pRow = $res_pareto->fetch_assoc()) { 
+        $lbl = $pRow['label_downtime'];
+        $dur = (int)$pRow['total_detik'];
+        if (in_array($lbl, $forgiven_labels)) {
+            $historical_whitelist_dt += $dur;
+            $whitelist_pareto_map[$lbl] = $dur;
+        } else {
+            $historical_real_dt += $dur;
+            $pareto_map[$lbl] = $dur;
+        }
+    } 
+}
+
+// Hitung PPT Seconds
+$ppt_seconds = 0;
+$current_ts = strtotime($waktu_selesai);
+if ($shift_aktif == 'REKAP HARIAN' || $shift_aktif == 'ALL') {
+    $ppt_seconds = 24 * 3600;
+} else {
+    foreach($jamAktif as $jam) {
+        $eff_min = $jamEfektif[$jam] ?? 0;
+        if ($eff_min > 0) {
+            $p = explode('-', $jam);
+            if(count($p) == 2) {
+                $s_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[0]) . ':00');
+                $e_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[1]) . ':00');
+                if ($e_time < $s_time) $e_time += 86400;
+                if ($s_time < strtotime($waktu_mulai)) { $s_time += 86400; $e_time += 86400; }
+                
+                $slot_dur = $e_time - $s_time;
+                if ($current_ts > $s_time) {
+                    $elapsed = min($current_ts, $e_time) - $s_time;
+                    if ($slot_dur > 0) {
+                        $ppt_seconds += ($elapsed / $slot_dur) * ($eff_min * 60);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Ambil Ideal CT dari history quality
+$ideal_time_sec = $true_total_prod * $ctPcs;
+$allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $historical_real_dt);
+$final_whitelist_dt = min($historical_whitelist_dt, $allowed_whitelist_sec);
+
+if ($historical_whitelist_dt > 0 && $final_whitelist_dt > 0) {
+    $scale_factor = $final_whitelist_dt / $historical_whitelist_dt;
+    foreach ($whitelist_pareto_map as $wl_label => $wl_dur) {
+        $pareto_map[$wl_label] = ($pareto_map[$wl_label] ?? 0) + round($wl_dur * $scale_factor);
+    }
+}
+
+// Convert to arrays for UI sorting
+arsort($pareto_map);
+foreach ($pareto_map as $lbl => $val) {
+    if ($val > 0) {
+        $paretoLabels[] = $lbl;
+        $paretoValues[] = $val;
+    }
+}
+
+$totalLosstimeMenit = round(($historical_real_dt + $final_whitelist_dt) / 60);
 
 // OEE data from summary
 $oeeVal = number_format($summary['oee'] ?? 0, 1);

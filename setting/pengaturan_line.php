@@ -14,7 +14,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS master_line (id INT AUTO_INCREMENT PRIM
 $conn->query("ALTER TABLE master_line ADD COLUMN IF NOT EXISTS nama_template_shift1 VARCHAR(100)");
 $conn->query("ALTER TABLE master_line ADD COLUMN IF NOT EXISTS nama_template_shift2 VARCHAR(100)");
 
-$conn->query("CREATE TABLE IF NOT EXISTS setting_pabrik (id INT AUTO_INCREMENT PRIMARY KEY, jam_reset TIME DEFAULT '06:00:00')");
+$conn->query("CREATE TABLE IF NOT EXISTS setting_pabrik (id INT AUTO_INCREMENT PRIMARY KEY)");
 $conn->query("ALTER TABLE setting_pabrik ADD COLUMN IF NOT EXISTS jam_reset_shift1 TIME DEFAULT '16:00:00'");
 $conn->query("ALTER TABLE setting_pabrik ADD COLUMN IF NOT EXISTS jam_reset_shift2 TIME DEFAULT '06:00:00'");
 
@@ -43,14 +43,13 @@ if (isset($_POST['simpan_auto_reset'])) {
 
     $check = $conn->query("SELECT id FROM setting_pabrik LIMIT 1");
     if ($check && $check->num_rows > 0) {
-        $conn->query("UPDATE setting_pabrik SET jam_reset_shift1 = '$jam_s1', jam_reset_shift2 = '$jam_s2', jam_reset = '$jam_s2' WHERE id = 1");
+        $conn->query("UPDATE setting_pabrik SET jam_reset_shift1 = '$jam_s1', jam_reset_shift2 = '$jam_s2' WHERE id = 1");
     } else {
-        $conn->query("INSERT INTO setting_pabrik (jam_reset_shift1, jam_reset_shift2, jam_reset) VALUES ('$jam_s1', '$jam_s2', '$jam_s2')");
+        $conn->query("INSERT INTO setting_pabrik (jam_reset_shift1, jam_reset_shift2) VALUES ('$jam_s1', '$jam_s2')");
     }
     echo "<script>alert('Pengaturan Jam Auto-Reset 2 Shift berhasil disimpan!'); window.location.href='pengaturan_line.php';</script>";
     exit;
 }
-
 // 4. Handle Line Templates Form Submit (1 Global Template per Line)
 if (isset($_POST['simpan_line'])) {
     if (isset($_POST['template']) && is_array($_POST['template'])) {
@@ -66,11 +65,11 @@ if (isset($_POST['simpan_line'])) {
 }
 
 // 5. Fetch Auto-Reset Data
-$sql_reset = "SELECT jam_reset_shift1, jam_reset_shift2, jam_reset FROM setting_pabrik LIMIT 1";
+$sql_reset = "SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1";
 $res_reset = $conn->query($sql_reset);
 $row_reset = ($res_reset && $res_reset->num_rows > 0) ? $res_reset->fetch_assoc() : [];
 $jam_reset_s1 = $row_reset['jam_reset_shift1'] ?? '16:00:00';
-$jam_reset_s2 = $row_reset['jam_reset_shift2'] ?? ($row_reset['jam_reset'] ?? '06:00:00');
+$jam_reset_s2 = $row_reset['jam_reset_shift2'] ?? '06:00:00';
 
 // 6. Fetch Lines Data
 $sql_line = "SELECT nama_line, nama_template FROM master_line ORDER BY nama_line ASC";

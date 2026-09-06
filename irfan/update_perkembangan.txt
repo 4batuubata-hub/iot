@@ -1,6 +1,8 @@
 =============================================================================
 DOKUMEN CATATAN PERKEMBANGAN SISTEM (ISSUE, BUG, DAN FITUR)
 =============================================================================
+update yang sudah ditulis tidak boleh diganti atau diubah.. tapi masalah/ update perkembangan itu diteruskan
+selalu selalu gunakan tanggal dan jam
 File ini berfungsi sebagai rekam jejak (changelog) untuk mendokumentasikan 
 setiap permasalahan (issue/bug) yang ditemukan pada sistem, serta perbaikan 
 dan penambahan fitur baru yang telah diimplementasikan. Dengan adanya log ini, 
@@ -57,5 +59,151 @@ Diperbarui Oleh : Developer
      akan otomatis membuatkan ekstensi jam kelanjutan (contoh: 04:30 - 05:30) 
      tanpa mengharuskan Admin menambahkannya secara manual.
      
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 06 September 2026, 18:46 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. OEE, Availability, Performance, dan Quality pada History Menjadi 0.0%:
+   Setelah dilakukan "Pemecahan Sejarah Data (Data Slicing)", nilai perhitungan persentase OEE dan variabel lainnya pada data historis sebelumnya tidak terhitung (hanya mengambil Total OK). Hal ini menyebabkan seluruh persentase di dashboard History untuk masa perbaikan tersebut tampil sebagai 0.0%.
+
+2. Bug Pergeseran Hari (Day Shift Backward) pada cron_reset.php:
+   Fungsi `getLogicalDay` di dalam `cron_reset.php` sebelumnya menggunakan patokan waktu dari variabel `$tanggal_history` (yang dievaluasi menjadi jam 00:00:00). Karena sistem menganggap waktu sebelum 07:00 adalah milik shift hari sebelumnya, maka hal ini secara tidak sengaja menggeser hari mundur 1 hari (misal dari Sabtu ke Jumat), yang berpotensi mengambil jadwal jam kerja efektif yang salah untuk perhitungan OEE.
+
+3. Kolom Legacy 'jam_reset' Membingungkan di Database:
+   Terdapat 3 kolom pengaturan jam pada tabel `setting_pabrik` (`jam_reset`, `jam_reset_shift1`, `jam_reset_shift2`), dimana `jam_reset` adalah kolom sisa dari sistem lama (legacy) yang sudah tidak digunakan secara proaktif, namun masih menjadi *fallback* dan membingungkan konfigurasi.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Skrip Kalkulasi Ulang Historis OEE (fix_history_oee.php):
+   - Telah dibuat dan dieksekusi skrip khusus sekali pakai (one-off script) untuk membaca ulang data historis, menghitung kembali Planned Production Time (PPT), Total Downtime, dan Total NG berdasarkan waktu aktual, lalu memasukannya ke dalam rumus APQ dan OEE.
+   - Hasil: 62 baris rekaman pada `history_summary` yang dulunya 0.0% kini telah direstorasi dan memiliki perhitungan OEE yang akurat di UI.
+
+2. Perbaikan Parameter getLogicalDay pada cron_reset.php:
+   - Variabel yang diteruskan ke `getLogicalDay` telah diubah dari `$tanggal_history` menjadi `$waktu_mulai` (timestamp aktual data pertama). Sistem sekarang akan mendeteksi hari dan shift secara presisi tanpa bergeser mundur.
+
+3. Penghapusan Kolom Legacy 'jam_reset':
+   - Kolom `jam_reset` telah di-drop dari tabel `setting_pabrik`.
+   - Kode sumber pada `cron_reset.php` dan `setting/pengaturan_line.php` telah dibersihkan dari seluruh referensi dan *fallback* ke kolom lama tersebut.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+  
+========================================  
+Tanggal: 2026-09-06 19:02:00 WIB  
+1. Memperbaiki logika cron_reset.php agar kebal terhadap keterlambatan server menyala (misal server mati saat weekend).  
+2. Menambahkan variabel batas_waktu agar cron_reset hanya memproses data produksi yang benar-benar terjadi SEBELUM batas akhir shift (Shift 1 = 18:00, Shift 2 = 06:30).  
+3. Dengan perbaikan ini, jika server baru dihidupkan jam 07:30, produksi jam 07:18 tidak akan terseret masuk ke Shift 2 kemarin, melainkan akan tersimpan aman untuk Shift 1 hari ini. 
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 01:15 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Masalah "Lembur Siluman" dan Jam Kosong (Losstime) yang Merusak Nilai OEE:
+   Sebelumnya, saat sistem melakukan Tutup Buku / Reset Shift (baik itu dipencet manual oleh admin atau jalan otomatis oleh sistem/cron), sistem akan "memotong" jam produksi semua mesin pada saat jam reset itu ditekan. 
+   
+   Contoh Kasus: 
+   - Jadwal kerja normal selesai jam 16:00.
+   - Admin pulang dan tidak tahu bahwa Mesin B masih lanjut beroperasi (Lembur Siluman) sampai jam 17:30.
+   - Pada jam 18:00, sistem melakukan reset shift otomatis (cron berjalan).
+   - Akibatnya: Sistem lama menganggap jam 17:30 sampai 18:00 (saat reset berjalan) sebagai Waktu Kosong (Downtime/Losstime) untuk Mesin B. Padahal operator Mesin B sudah pulang jam 17:30 dan mematikan mesinnya. Tambahan waktu kosong 30 menit ini jelas membuat nilai OEE (Performance dan Availability) menjadi turun (dirugikan) secara tidak adil.
+
+2. Aturan Dasar yang Diinginkan:
+   Mesin yang sudah tutup atau mati seharusnya di-kunci riwayatnya tepat pada jam saat mesin itu terakhir kali memproduksi barang. Sistem reset tidak boleh menambahkan jam kosong secara asal hanya karena tombol reset ditekan terlambat atau cron baru berjalan.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Sistem Reset Pintar Per-Mesin ("Smart Auto-Lembur / Sapu Ranjau"):
+   - Sekarang, program tutup buku (`cron_reset.php`) sudah diubah agar mengecek setiap mesin satu per satu, tidak lagi memukul rata semua mesin.
+   - Sistem akan melacak jam berapa sebuah mesin terakhir kali mencetak barang (dilihat dari `last_active_ts`).
+   - "Lembur Siluman": Jika jadwal mesin habis jam 16:00, namun mesin masih terus mencetak barang sampai jam 17:30, sistem akan dengan pintar mengenali bahwa ini adalah jam "Lembur" dan membiarkannya (mensahkannya).
+   - Sapu Ranjau (Penutupan Otomatis): Kapan sistem berani menutup buku mesin tersebut? Sistem HANYA akan melakukan reset pada sebuah mesin JIKA:
+     a) Jadwal kerja atau jadwal lembur mesin tersebut sudah lewat.
+     b) DAN mesin tersebut sudah TIDAK MENCETAK BARANG / NGANGGUR selama minimal 15 menit berturut-turut.
+   - Intinya: Selama mesin masih terus mencetak produk tanpa jeda lama, mesin akan dilindungi dari reset paksa.
+
+2. Capping Losstime (Penguncian Waktu agar Tidak Ada Waktu Kosong Fiktif):
+   - Kembali ke kasus di atas: Mesin B berhenti beroperasi jam 17:30. Sistem baru mendeteksi kemacetan/menganggurnya mesin ini pada jam 18:00.
+   - Apa yang dilakukan sistem baru? Sistem akan melihat riwayat terakhir mesin B (jam 17:30) dan akan *MENGUNCI (Capping)* waktu akhir shift mesin B HANYA sampai pukul 17:30.
+   - Hasilnya: Waktu kosong (losstime) dari 17:30 ke 18:00 TIDAK AKAN dihitung dan TIDAK AKAN dimasukkan ke dalam shift tersebut. Nilai OEE operator selamat dan tetap tinggi!
+
+3. Penyesuaian Tombol Reset Manual (`user/history/proses_reset.php`):
+   - Fitur penguncian waktu di atas (Capping) juga sudah dimasukkan ke dalam tombol Reset Shift di halaman dashboard. Jadi, meskipun Admin terlambat memencet tombol reset (misal dipencet jam 18:00 padahal produksi selesai jam 17:30), operator tetap tidak akan dirugikan oleh tambahan waktu kosong. Data riwayat mereka akan dipotong rapi sesuai dengan waktu barang terakhir dicetak.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+  -   [ 1 9 : 4 0 ]   M e n j a l a n k a n   r e b u i l d   m a s s a l   s e l u r u h   h i s t o r y _ s u m m a r y   d a r i   2   A g u s t u s   h i n g g a   h a r i   i n i .   M e n y e s u a i k a n   u l a n g   O E E ,   t o t a l _ o k ,   d a n   s h i f t   b o u n d s   ( 1 8 : 0 0   d a n   0 6 : 3 0 )   s e h i n g g a   m e n g h i l a n g k a n   e f e k   s e r v e r   d o w n   d a r i   m a s a   l a l u . 
+
+=============================================================================
+Tanggal: 2026-09-07 01:25:00 WIB
+Perbaikan Hardware Integer Overflow (-32k)
+
+[URAIAN MASALAH]
+1. Limitasi Tipe Data 16-bit (Integer) di Arduino:
+   Arduino Mega/Nano menggunakan tipe data `int` yang hanya berukuran 16-bit, dengan batas maksimal angka 32.767. Saat alat memproduksi barang ke-32.768, angka ini akan "jebol/overflow" ke sisi negatif menjadi -32.768.
+2. Data Produksi Hilang (Lost Data):
+   Trigger pada database `before_log_quality_insert` memiliki fungsi untuk mengabaikan nilai negatif (`IF NEW.prodCount < 0 THEN delta = 0`). Akibatnya, setiap produksi dari -32.768 hingga alat kembali berhitung ke 0, datanya TIDAK TERCATAT SAMA SEKALI oleh sistem web (total hilang lebih dari 32 ribu data!).
+
+[SOLUSI YANG DITERAPKAN]
+1. Upgrade Kapasitas Memori Variabel di `irfan/top8-FIX.ino`:
+   Mengubah seluruh variabel perhitungan produksi di kode Arduino IoT dari tipe `int` (16-bit) menjadi `unsigned long` (32-bit murni positif). 
+   - Variabel yang diubah: `prodCount`, `NGCount`, `OKCount`, `cycleCountSaved`, `cycleCount`, `lastOKCount`, `lastNGCount`.
+   - Dampak: Variabel *Unsigned* menghilangkan sama sekali ruang memori untuk angka negatif, dan memperluas daya tampung maksimal alat dari 32 Ribu menjadi **4,2 Milyar**!
+   - Hasilnya, alat ini tidak akan pernah menyentuh limit overflow seumur hidup mesin beroperasi.
+
+2. Fitur "Anti-Glitch / I2C EMI Filter" di Arduino:
+   Kelemahan lama ada di sistem Anti-Drop yang mudah ditipu oleh glitch/noise listrik singkat (EMI) yang sering muncul karena alat bekerja di pabrik dengan medan magnet / arus besar (kontaktor dsb). Glitch ini yang melahirkan data gaib 32.000 atau -32.000 yang terekam seketika di database Jumat lalu.
+   
+   Sekarang kode `irfan/top8-FIX.ino` sudah dilapisi pelindung baru:
+   - **Filter I2C Error 65535**: Secara eksplisit menolak angka `65535` karena ini adalah nilai mentah saat kabel data I2C terganggu (0xFFFF).
+   - **Spike Filter**: Jika mesin mendadak mencetak lebih dari 500 barang dalam 1 detik (mustahil secara fisik), lonjakan ini ditolak karena pasti merupakan induksi listrik (EMI) dari mesin pabrik.
+   - **Drop Restart Verification**: Jika angka tiba-tiba turun (biasanya masuk ke fitur anti-drop/restart), Arduino diwajibkan untuk mengonfirmasinya dengan "Tunggu 2 detik berturut-turut membaca angka 0". Jika hanya anjlok sesaat lalu kembali tinggi di detik berikutnya (glitch 1 detik), maka anjlok tersebut akan diabaikan sehingga angkanya tidak terlipatgandakan ke memori secara permanen.
+
+[CATATAN UNTUK SENIOR: BAGAIMANA GLITCH 1 DETIK BISA MELIPATGANDAKAN HITUNGAN?]
+Mekanisme pelipatgandaan angka ini (sampai puluhan ribu) terjadi karena celah pada fitur "Anti-Drop" lama saat bertemu dengan noise listrik (EMI). Berikut kronologis teknisnya:
+1. Kondisi Normal: Mesin sudah mencetak 500 barang. Di Arduino, `cycleCountReceived` = 500.
+2. Terjadi Glitch: Ada radiasi elektromagnetik (motor menyala dll). Pembacaan I2C dari Nano gagal/rusak, dan tiba-tiba terbaca angka 0 (atau angka acak yang lebih kecil dari 500).
+3. "Anti-Drop" Tertipu: Sistem lama melihat angka turun dari 500 ke 0. Ia langsung mengira modul Nano baru saja ter-restart karena mati listrik. Agar grafik produksi di LCD tidak ikut anjlok jadi 0, sistem lama *menyelamatkan* angka 500 tadi ke dalam variabel memori permanen (`cycleCountSaved` bertambah 500).
+4. Glitch Hilang (Sedetik Kemudian): Pembacaan I2C kembali normal. Mega membaca angka asli dari Nano yang masih berhitung normal, yaitu 501.
+5. Pelipatgandaan Terjadi: Rumus produksi adalah Total = Memori Permanen + Bacaan Asli. Jadi: Total = 500 + 501 = 1.001 barang!
+6. Efek Bola Salju: Bayangkan jika glitch membaca angka aneh seperti 65.535 (khas error kabel I2C), lalu anjlok kembali ke normal. Fitur Anti-Drop akan terus menelan selisih ribuan tersebut ke dalam memori permanen (`cycleCountSaved`) setiap kali glitch terjadi. Itulah sebabnya alat bisa tiba-tiba mengirim data 32.000 atau -32.000 ke database dalam sekejap tanpa disentuh manusia.
+
+Status: RESOLVED & KODE IoT SIAP DI-UPLOAD.
+=============================================================================
+
+[CATATAN TAMBAHAN: ALUR BACA "QTY OK" DI DASHBOARD (DETAIL.PHP) & LOGIKA ANTI-RESET]
+Untuk menjawab bagaimana Dashboard Web (user/detail.php) tetap menampikan data dengan utuh walaupun Arduino/alat sering di-reset (baik otomatis oleh cron_reset maupun manual), berikut adalah mekanisme perhitungannya:
+1. Perekaman Raw Data: Arduino selalu mengirimkan angka `prodCount` yang sedang berjalan ke Node-RED, lalu disimpan berderet ke bawah di tabel `log_quality`.
+2. Kalkulasi Delta (Selisih) Anti-Reset: Saat web dibuka, ia akan menarik seluruh riwayat `log_quality` dari awal shift hingga detik itu, lalu mengurutkannya dari yang paling awal.
+   Web akan membandingkan baris saat ini dengan baris sebelumnya.
+   - Jika Angka Naik (Delta > 0): Berarti produksi normal (misal 100 ke 120), maka total ditambah 20.
+   - Jika Angka Turun (Delta < 0): Ini mengindikasikan ALAT BARU SAJA DI-RESET (misal dari 32.000 menjadi 5). Bukannya mengurangi total, web dengan cerdas menganggap ini sebagai lembaran baru dan langsung menambahkan angka 5 tersebut ke total produksi.
+   - Dengan sistem *Delta Calculation* ini, alat IoT bebas mau di-reset 10x sehari pun, total produksi di web akan terus terakumulasi dengan benar (disimpan di variabel `$true_total_prod`).
+3. Perhitungan Akhir: Web kemudian menghitung total reject (NG) dan barang yang diperbaiki (Repair) dari tabel `log_ng`.
+   Rumus akhirnya: QTY OK = Qty Total Produksi - (Total NG - Total Repair).
+   
+Sistem web ini sudah sangat kuat (*robust*) menghadapi putus koneksi ataupun pemotongan waktu lembur.
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 02:15 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Syntax Error pada `api_dashboard.php`:
+   Terdapat kurung kurawal penutup ganda `}` yang tersisa dari restrukturisasi logika sebelumnya (pada baris 322). Hal ini menyebabkan respons JSON dari API terputus (HTTP 500) dan mengakibatkan "Black Screen" atau halaman Blank pada layar dashboard produksi.
+2. Cacat Logika SQL pada `cron_reset.php`:
+   Pengambilan baris terakhir downtime yang sedang berjalan (ongoing downtime) menggunakan `MAX(id)` dan `mcInfo` tanpa `GROUP BY`. Query ini tidak valid di MySQL 5.7+ (dengan ONLY_FULL_GROUP_BY) dan berpotensi memicu error yang menghentikan proses sapu ranjau/auto-reset di pertengahan eksekusi.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Pembersihan Syntax di `api_dashboard.php`:
+   - Kurung kurawal ganda yang tidak memiliki pasangan telah dihapus, sehingga file PHP kembali lolos uji kompilasi (No syntax errors detected) dan dashboard bisa me-render data mesin tanpa *black screen*.
+2. Refactoring Query SQL di `cron_reset.php`:
+   - Query `SELECT mcInfo, MAX(id)` telah diganti dengan metode yang jauh lebih aman dan sesuai standar MySQL: `SELECT mcInfo, id ... ORDER BY id DESC LIMIT 1`. Perubahan ini menjamin proses *auto-reset* berjalan stabil tanpa risiko terhenti di tengah eksekusi akibat error sintaks query.
+
 Status: RESOLVED & DEPLOYED.
 =============================================================================
