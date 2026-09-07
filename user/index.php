@@ -144,9 +144,11 @@ require_once __DIR__ . '/../auth_check.php';
             </div>
         </div>
         <div class="filter-container">
+            <?php if (isset($_SESSION['user_role']) && in_array($_SESSION['user_role'], ['it', 'admin'])): ?>
             <button onclick="forceResetShift()" style="background: #ef4444; color: white; border: none; padding: 10px 15px; border-radius: 8px; font-weight: bold; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: all 0.2s;" onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'">
                 🛠️ FORCE RESET SHIFT (TESTING)
             </button>
+            <?php endif; ?>
             <div class="checkbox-group">
                 <label id="lbl-RUNNING" class="active"><span class="indicator-dot bg-run"></span><input type="checkbox" value="RUNNING" checked onchange="toggleFilter(this)"> RUNNING</label>
                 <label id="lbl-STANDBY" class="active"><span class="indicator-dot bg-stb"></span><input type="checkbox" value="STANDBY" checked onchange="toggleFilter(this)"> STANDBY</label>

@@ -76,7 +76,7 @@ try {
 
             $hari_history = getLogicalDay(strtotime($waktu_mulai));
             $tpl_esc = $conn->real_escape_string($template_aktif);
-            $sql_slots = "SELECT jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_label' AND (hari = '$hari_history' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+            $sql_slots = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_label' AND (hari = '$hari_history' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
             $res_slots = $conn->query($sql_slots);
             
             $ppt_seconds = 0;
@@ -84,7 +84,7 @@ try {
             if ($res_slots && $res_slots->num_rows > 0) {
                 while($r_slot = $res_slots->fetch_assoc()) {
                     $ppt_seconds += ((int)$r_slot['menit_efektif'] * 60);
-                    $parts = explode('-', $r_slot['jam']);
+                    $parts = explode('-', $r_slot['rentang_jam']);
                     if (count($parts) == 2) {
                         $scheduled_end_jam = trim($parts[1]);
                     }
@@ -101,14 +101,18 @@ try {
 
             // Cek Override Lembur
             $override_end_ts = 0;
-            $res_ov = $conn->query("SELECT jam_selesai_lembur, total_menit FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$tanggal_history' LIMIT 1");
+            $res_ov = $conn->query("SELECT jam_mulai, jam_selesai FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$tanggal_history' LIMIT 1");
             if ($res_ov && $res_ov->num_rows > 0) {
                 $ov = $res_ov->fetch_assoc();
-                $override_end_ts = strtotime($tanggal_history . ' ' . $ov['jam_selesai_lembur']);
-                if ($ov['jam_selesai_lembur'] < '12:00:00' && $jam_mulai >= '12:00:00') {
+                $override_end_ts = strtotime($tanggal_history . ' ' . $ov['jam_selesai']);
+                $override_start_ts = strtotime($tanggal_history . ' ' . $ov['jam_mulai']);
+                if ($ov['jam_selesai'] < '12:00:00' && $jam_mulai >= '12:00:00') {
                     $override_end_ts = strtotime('+1 day', $override_end_ts);
                 }
-                $ppt_seconds += ((int)$ov['total_menit'] * 60);
+                if ($ov['jam_mulai'] > $ov['jam_selesai']) {
+                    $override_end_ts = strtotime('+1 day', strtotime($tanggal_history . ' ' . $ov['jam_selesai']));
+                }
+                $ppt_seconds += ($override_end_ts - $override_start_ts);
             }
 
             // Cek Aktivitas Terakhir (Lembur Siluman)

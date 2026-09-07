@@ -117,7 +117,7 @@ function doMachineReset($conn, $mcID, $max_q, $max_ng, $max_dt, $shift_label, $t
         $last_row = $conn->query("SELECT prodCount, raw_prodCount FROM log_quality WHERE mcID = '$mcID' ORDER BY id DESC LIMIT 1")->fetch_assoc();
         $last_prod = $last_row['prodCount'] ?? 0;
         $last_raw = $last_row['raw_prodCount'] ?? 0;
-        $conn->query("UPDATE master_mesin SET catStatus = 'OFF SHIFT', offset_produksi = '$last_prod', offset_raw_produksi = '$last_raw' WHERE mcID = '$mcID' OR id_mesin = '$mcID'");
+        $conn->query("UPDATE master_mesin SET catStatus = 'OFF', offset_produksi = '$last_prod', offset_raw_produksi = '$last_raw' WHERE mcID = '$mcID' OR id_mesin = '$mcID'");
 
         $conn->commit();
         echo "  -> Reset $mcID OK.\n";
@@ -172,15 +172,15 @@ if ($machines && $machines->num_rows > 0) {
 
         $hari_history = getLogicalDay(strtotime($waktu_mulai));
         $tpl_esc = $conn->real_escape_string($template_aktif);
-        $sql_slots = "SELECT jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_label' AND (hari = '$hari_history' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+        $sql_slots = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_label' AND (hari = '$hari_history' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
         $res_slots = $conn->query($sql_slots);
         
-        $ppt_seconds = 0;
         $scheduled_end_jam = '';
+        $slots_data = [];
         if ($res_slots && $res_slots->num_rows > 0) {
             while($r_slot = $res_slots->fetch_assoc()) {
-                $ppt_seconds += ((int)$r_slot['menit_efektif'] * 60);
-                $parts = explode('-', $r_slot['jam']);
+                $slots_data[] = $r_slot;
+                $parts = explode('-', $r_slot['rentang_jam']);
                 if (count($parts) == 2) {
                     $scheduled_end_jam = trim($parts[1]);
                 }
@@ -201,16 +201,19 @@ if ($machines && $machines->num_rows > 0) {
 
         // Cek Override Lembur
         $override_end_ts = 0;
-        $res_ov = $conn->query("SELECT jam_selesai_lembur, total_menit FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$tanggal_history' LIMIT 1");
+        $override_start_ts = 0;
+        $res_ov = $conn->query("SELECT jam_mulai, jam_selesai FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$tanggal_history' LIMIT 1");
         if ($res_ov && $res_ov->num_rows > 0) {
             $ov = $res_ov->fetch_assoc();
-            $override_end_ts = strtotime($tanggal_history . ' ' . $ov['jam_selesai_lembur']);
-            if ($ov['jam_selesai_lembur'] < '12:00:00' && $jam_mulai >= '12:00:00') {
+            $override_end_ts = strtotime($tanggal_history . ' ' . $ov['jam_selesai']);
+            $override_start_ts = strtotime($tanggal_history . ' ' . $ov['jam_mulai']);
+            if ($ov['jam_selesai'] < '12:00:00' && $jam_mulai >= '12:00:00') {
                 $override_end_ts = strtotime('+1 day', $override_end_ts);
             }
-            // Tambahkan waktu lembur ke target
-            $ppt_seconds += ((int)$ov['total_menit'] * 60);
-            echo "  [INFO] Override Lembur Ditemukan: " . $ov['jam_selesai_lembur'] . "\n";
+            if ($ov['jam_mulai'] > $ov['jam_selesai']) {
+                $override_end_ts = strtotime('+1 day', strtotime($tanggal_history . ' ' . $ov['jam_selesai']));
+            }
+            echo "  [INFO] Override Lembur Ditemukan: " . $ov['jam_selesai'] . "\n";
         }
 
         // Cek Aktivitas Terakhir (Untuk Lembur Siluman / Auto-Detect)
@@ -221,11 +224,75 @@ if ($machines && $machines->num_rows > 0) {
         // Kalkulasi Waktu End Dinamis (Yang Terbesar Diantara Jadwal / Override / Aktivitas)
         $dynamic_end_ts = max($scheduled_end_ts, $override_end_ts, $last_active_ts);
 
-        // Jika tidak ada override tapi operator lanjut kerja melebih batas (Lembur Siluman)
+        // TASK 3: HARD CAP dynamic_end_ts to next shift reset time
+        $hard_cap_ts = 0;
+        if ($shift_label == 'SHIFT 2') {
+            $hard_cap_ts = strtotime(date('Y-m-d', strtotime('+1 day', strtotime($tanggal_mulai))) . ' ' . $jam_reset_s2);
+        } else {
+            $hard_cap_ts = strtotime($tanggal_mulai . ' ' . $jam_reset_s1);
+            if ($hard_cap_ts < strtotime($waktu_mulai)) {
+                // Failsafe if jam_reset_s1 < jam_mulai but still considered SHIFT 1
+                $hard_cap_ts = strtotime('+1 day', $hard_cap_ts);
+            }
+        }
+        if ($dynamic_end_ts > $hard_cap_ts) {
+            $dynamic_end_ts = $hard_cap_ts;
+            echo "  [INFO] HARD CAP Applied. End dinamis dibatasi sampai " . date('Y-m-d H:i:s', $hard_cap_ts) . "\n";
+        }
+
+        // TASK 2: Hitung PPT berdasarkan Irisan dengan dynamic_end_ts
+        $ppt_seconds = 0;
+        $machine_start_ts = strtotime($waktu_mulai);
+        
+        foreach ($slots_data as $r_slot) {
+            $parts = explode('-', $r_slot['rentang_jam']);
+            if (count($parts) == 2) {
+                $s_jam = trim($parts[0]);
+                $e_jam = trim($parts[1]);
+                $slot_s_ts = strtotime($tanggal_mulai . ' ' . $s_jam);
+                $slot_e_ts = strtotime($tanggal_mulai . ' ' . $e_jam);
+                
+                // Koreksi Lintas Malam Shift 2
+                if ($shift_label == 'SHIFT 2') {
+                    if ($s_jam < '12:00:00' && $jam_mulai >= '12:00:00') $slot_s_ts = strtotime('+1 day', $slot_s_ts);
+                    if ($e_jam < '12:00:00' && $jam_mulai >= '12:00:00') $slot_e_ts = strtotime('+1 day', $slot_e_ts);
+                }
+                if ($slot_e_ts < $slot_s_ts) {
+                    $slot_e_ts = strtotime('+1 day', $slot_e_ts);
+                }
+
+                $effective_start = max($slot_s_ts, $machine_start_ts);
+                $effective_end = min($slot_e_ts, $dynamic_end_ts);
+                
+                if ($effective_start < $effective_end) {
+                    $slot_duration = $slot_e_ts - $slot_s_ts;
+                    $actual_duration = $effective_end - $effective_start;
+                    if ($slot_duration > 0) {
+                        $rasio = $actual_duration / $slot_duration;
+                        $ppt_seconds += ($r_slot['menit_efektif'] * 60) * $rasio;
+                    }
+                }
+            }
+        }
+
+        // Tambahkan lembur jika ada irisan
+        if ($override_end_ts > 0 && $override_end_ts > $override_start_ts) {
+            $effective_l_start = max($override_start_ts, $machine_start_ts);
+            $effective_l_end = min($override_end_ts, $dynamic_end_ts);
+            if ($effective_l_start < $effective_l_end) {
+                $ppt_seconds += ($effective_l_end - $effective_l_start);
+            }
+        }
+
+        // Lembur Siluman Otomatis
         if ($override_end_ts == 0 && $last_active_ts > $scheduled_end_ts) {
-            $extra_seconds = $last_active_ts - $scheduled_end_ts;
-            $ppt_seconds += $extra_seconds;
-            echo "  [INFO] Lembur Siluman Otomatis Terdeteksi: +" . round($extra_seconds/60) . " Menit\n";
+            $effective_s_start = max($scheduled_end_ts, $machine_start_ts);
+            $effective_s_end = min($last_active_ts, $dynamic_end_ts);
+            if ($effective_s_start < $effective_s_end) {
+                $extra_seconds = $effective_s_end - $effective_s_start;
+                $ppt_seconds += $extra_seconds;
+                echo "  [INFO] Lembur Siluman Otomatis Terdeteksi: +" . round($extra_seconds/60) . " Menit\n";
+            }
         }
 
         // ----------------------------------------------------

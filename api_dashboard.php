@@ -15,9 +15,10 @@ $conn->query("SET time_zone = '+07:00'");
 // Dipindahkan ke cron_reset.php untuk mengurangi beban dashboard API.
 // ==========================================
 
-function getLogicalDay() {
-    $now = date('H:i:s');
-    $day_num = date('N'); // 1 (Monday) to 7 (Sunday)
+function getLogicalDay($time = null) {
+    if ($time === null) $time = time();
+    $now = date('H:i:s', $time);
+    $day_num = date('N', $time); // 1 (Monday) to 7 (Sunday)
     
     // Shift 2 usually runs past midnight into the next day. 
     // If it's before 07:00 AM, it logically belongs to the previous day's shift schedule.
@@ -34,83 +35,85 @@ function getLogicalDay() {
 }
 
 function getActiveShift($conn, $line) {
+    // Ambil setting jam reset
+    $sql_setting = $conn->query("SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1");
+    $row_setting = ($sql_setting && $sql_setting->num_rows > 0) ? $sql_setting->fetch_assoc() : [];
+    $jam_reset_s1 = $row_setting['jam_reset_shift1'] ?? '16:00:00';
+    $jam_reset_s2 = $row_setting['jam_reset_shift2'] ?? '06:00:00';
+
+    $now = date('H:i:s'); 
+    $today = date('Y-m-d');
+    
+    // Penentuan logical shift berdasarkan batas jam_reset
+    $is_shift_1 = false;
+    if ($jam_reset_s2 <= $jam_reset_s1) {
+        if ($now >= $jam_reset_s2 && $now < $jam_reset_s1) {
+            $is_shift_1 = true;
+        }
+    } else {
+        if ($now >= $jam_reset_s2 || $now < $jam_reset_s1) {
+            $is_shift_1 = true;
+        }
+    }
+
+    $shift_aktif = $is_shift_1 ? 'SHIFT 1' : 'SHIFT 2';
+    if ($is_shift_1) {
+        $mulai = "$today $jam_reset_s2";
+        $selesai = "$today $jam_reset_s1";
+    } else {
+        if ($now >= $jam_reset_s1) {
+            $mulai = "$today $jam_reset_s1";
+            $selesai = date('Y-m-d', strtotime('+1 day')) . " $jam_reset_s2";
+        } else {
+            $mulai = date('Y-m-d', strtotime('-1 day')) . " $jam_reset_s1";
+            $selesai = "$today $jam_reset_s2";
+        }
+    }
+
+    $hari = getLogicalDay(strtotime($mulai));
+
+    // Ambil template
     $sql_tpl = "SELECT nama_template FROM master_line WHERE nama_line = '$line' LIMIT 1";
     $res_tpl = $conn->query($sql_tpl);
     $row_tpl = ($res_tpl && $res_tpl->num_rows > 0) ? $res_tpl->fetch_assoc() : [];
-    
     $template = $row_tpl['nama_template'] ?? 'DEFAULT';
 
-    $now = date('H:i:s'); $today = date('Y-m-d');
-    $hari = getLogicalDay();
-    
     $templates_to_check = array_unique([$template, 'DEFAULT']);
-    
+    $slots = [];
+    $found_template = 'DEFAULT';
+
     foreach ($templates_to_check as $tpl) {
         if (empty($tpl)) continue;
         $tpl_esc = $conn->real_escape_string($tpl);
-        $sql = "SELECT shift, rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND (hari = '$hari' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+        $sql = "SELECT shift, rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_aktif' AND (hari = '$hari' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
         $res = $conn->query($sql);
         
-        if (!$res || $res->num_rows == 0) continue;
-
-        $shift_data = [];
-        while($r = $res->fetch_assoc()) {
-            $p = explode('-', $r['rentang_jam']);
-            if(count($p) == 2) {
-                $start = trim($p[0]).":00"; $end = trim($p[1]).":00"; $s_name = $r['shift'];
-                if(!isset($shift_data[$s_name])) { 
-                    $shift_data[$s_name] = ['start' => $start, 'end' => $end, 'slots' => []]; 
-                } else { 
-                    $shift_data[$s_name]['end'] = $end; 
+        if ($res && $res->num_rows > 0) {
+            $found_template = $tpl;
+            while($r = $res->fetch_assoc()) {
+                $p = explode('-', $r['rentang_jam']);
+                if(count($p) == 2) {
+                    $slots[] = [
+                        'start' => trim($p[0]).":00", 
+                        'end' => trim($p[1]).":00", 
+                        'menit_efektif' => (int)$r['menit_efektif']
+                    ];
                 }
-                $shift_data[$s_name]['slots'][] = ['start' => $start, 'end' => $end, 'menit_efektif' => (int)$r['menit_efektif']];
             }
+            break;
         }
-        
-        $best_past_shift = null;
-        $min_diff = PHP_INT_MAX;
-        
-        foreach($shift_data as $s_name => $times) {
-            $s = $times['start']; $e = $times['end']; $slots = $times['slots'];
-            
-            if ($s <= $e) { 
-                if ($now >= $s && $now <= $e) return ['shift' => $s_name, 'mulai' => "$today $s", 'selesai' => "$today $e", 'template' => $tpl, 'hari' => $hari, 'slots' => $slots];
-                $ts_e = strtotime("$today $e");
-                $ts_e_y = strtotime("-1 day", $ts_e);
-                
-                $m_today = "$today $s"; $s_today = "$today $e";
-                $m_yest = date('Y-m-d', strtotime('-1 day'))." $s"; $s_yest = date('Y-m-d', strtotime('-1 day'))." $e";
-            } else { 
-                if ($now >= $s) return ['shift' => $s_name, 'mulai' => "$today $s", 'selesai' => date('Y-m-d', strtotime('+1 day'))." $e", 'template' => $tpl, 'hari' => $hari, 'slots' => $slots];
-                elseif ($now <= $e) return ['shift' => $s_name, 'mulai' => date('Y-m-d', strtotime('-1 day'))." $s", 'selesai' => "$today $e", 'template' => $tpl, 'hari' => $hari, 'slots' => $slots];
-                
-                $ts_e = strtotime("+1 day", strtotime("$today $e"));
-                $ts_e_y = strtotime("$today $e");
-                
-                $m_today = "$today $s"; $s_today = date('Y-m-d', strtotime('+1 day'))." $e";
-                $m_yest = date('Y-m-d', strtotime('-1 day'))." $s"; $s_yest = "$today $e";
-            }
-            
-            $current_time = time();
-            if ($current_time >= $ts_e) {
-                if ($current_time - $ts_e < $min_diff) {
-                    $min_diff = $current_time - $ts_e;
-                    $best_past_shift = ['shift' => 'OFF SHIFT', 'mulai' => $m_today, 'selesai' => $s_today, 'template' => $tpl, 'hari' => $hari, 'slots' => $slots];
-                }
-            }
-            
-            if ($current_time >= $ts_e_y) {
-                if ($current_time - $ts_e_y < $min_diff) {
-                    $min_diff = $current_time - $ts_e_y;
-                    $best_past_shift = ['shift' => 'OFF SHIFT', 'mulai' => $m_yest, 'selesai' => $s_yest, 'template' => $tpl, 'hari' => $hari, 'slots' => $slots];
-                }
-            }
-        }
-        
-        if ($best_past_shift) return $best_past_shift;
     }
-    return ['shift' => 'OFF SHIFT', 'mulai' => "$today 00:00:00", 'selesai' => "$today 23:59:59", 'template' => $template, 'hari' => getLogicalDay()];
+
+    return [
+        'shift' => $shift_aktif,
+        'mulai' => $mulai,
+        'selesai' => $selesai,
+        'template' => $found_template,
+        'hari' => $hari,
+        'slots' => $slots
+    ];
 }
+
 
 $today_db = date('Y-m-d');
 $sql_over_all = "SELECT mcID, jenis, jam_mulai, jam_selesai FROM mesin_override WHERE tanggal = '$today_db'";
@@ -225,20 +228,16 @@ if ($result && $result->num_rows > 0) {
             }
         }
 
-        if (!$is_in_shift) { 
-            $catStatus = 'OFF SHIFT'; $statusText = "OFF SHIFT"; $statusClass = "status-off"; 
-        } else {
-            if ($isTimeout) { 
-                $catStatus = 'OFF'; $statusText = "OFF / DISCONNECTED"; $statusClass = "status-off"; 
-            } 
-            elseif ($mcStatus == 'run' || $mcStatus == 'running' || strcasecmp($infoAsli, 'Running') == 0) { $catStatus = 'RUNNING'; $statusText = "RUNNING"; $statusClass = "status-running"; } 
-            elseif (in_array(strtoupper($infoAsli), array_map('strtoupper', $kuning)) || $mcStatus == 'standby') { $catStatus = 'STANDBY'; $statusText = strtoupper($infoAsli); $statusClass = "status-kuning"; } 
-            elseif ($mcStatus == 'alarm' || in_array(strtoupper($infoAsli), array_map('strtoupper', $oren)) || in_array(strtoupper($infoAsli), array_map('strtoupper', $merah))) { 
-                $catStatus = 'ALARM'; $statusText = strtoupper($infoAsli); 
-                $statusClass = in_array(strtoupper($infoAsli), array_map('strtoupper', $oren)) ? "status-oren" : "status-merah"; 
-            } 
-            else { $catStatus = 'OFF'; $statusText = "OFF"; $statusClass = "status-off"; }
-        }
+        if ($isTimeout) { 
+            $catStatus = 'OFF'; $statusText = "OFF / DISCONNECTED"; $statusClass = "status-off"; 
+        } 
+        elseif ($mcStatus == 'run' || $mcStatus == 'running' || strcasecmp($infoAsli, 'Running') == 0) { $catStatus = 'RUNNING'; $statusText = "RUNNING"; $statusClass = "status-running"; } 
+        elseif (in_array(strtoupper($infoAsli), array_map('strtoupper', $kuning)) || $mcStatus == 'standby') { $catStatus = 'STANDBY'; $statusText = strtoupper($infoAsli); $statusClass = "status-kuning"; } 
+        elseif ($mcStatus == 'alarm' || in_array(strtoupper($infoAsli), array_map('strtoupper', $oren)) || in_array(strtoupper($infoAsli), array_map('strtoupper', $merah))) { 
+            $catStatus = 'ALARM'; $statusText = strtoupper($infoAsli); 
+            $statusClass = in_array(strtoupper($infoAsli), array_map('strtoupper', $oren)) ? "status-oren" : "status-merah"; 
+        } 
+        else { $catStatus = 'OFF'; $statusText = "OFF"; $statusClass = "status-off"; }
 
         // 1. Ambil Data Downtime Historis & Kategorikan
         $forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];

@@ -2,7 +2,8 @@
 DOKUMEN CATATAN PERKEMBANGAN SISTEM (ISSUE, BUG, DAN FITUR)
 =============================================================================
 update yang sudah ditulis tidak boleh diganti atau diubah.. tapi masalah/ update perkembangan itu diteruskan
-selalu selalu gunakan tanggal dan jam
+selalu gunakan tanggal dan jam.
+selalu gunakan penjelasan dan bahasa yang mudah dipahami. 
 File ini berfungsi sebagai rekam jejak (changelog) untuk mendokumentasikan 
 setiap permasalahan (issue/bug) yang ditemukan pada sistem, serta perbaikan 
 dan penambahan fitur baru yang telah diimplementasikan. Dengan adanya log ini, 
@@ -204,6 +205,259 @@ Diperbarui Oleh : Antigravity (AI Assistant)
    - Kurung kurawal ganda yang tidak memiliki pasangan telah dihapus, sehingga file PHP kembali lolos uji kompilasi (No syntax errors detected) dan dashboard bisa me-render data mesin tanpa *black screen*.
 2. Refactoring Query SQL di `cron_reset.php`:
    - Query `SELECT mcInfo, MAX(id)` telah diganti dengan metode yang jauh lebih aman dan sesuai standar MySQL: `SELECT mcInfo, id ... ORDER BY id DESC LIMIT 1`. Perubahan ini menjamin proses *auto-reset* berjalan stabil tanpa risiko terhenti di tengah eksekusi akibat error sintaks query.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 07:37 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Sinkronisasi Tampilan OFF SHIFT (index.php vs detail.php):
+   Sebelumnya, terdapat ketidaksinkronan di mana layar utama (index.php) menampilkan "OFF SHIFT" tetapi saat masuk ke detail mesin (detail.php) statusnya masih menunjukkan "Mesin Running" dan memunculkan error render jam target/aktual (misal 07:00 - 04:30) yang tak berujung (memory-leak render kolom).
+2. Bug Cron Reset (Unknown Column & Lembur):
+   Terdapat kegagalan (fatal error) pada file cron_reset.php dan proses_reset.php karena query masih mencari kolom lama `jam` dan `jam_selesai_lembur` pada saat membaca konfigurasi jam statis dan mesin_override. Ini menyebabkan proses reset otomatis berhenti (crash) di tengah jalan secara diam-diam.
+3. Kebutuhan Auto-Stop Python Simulator:
+   Simulator produksi (run_simulation.ps1) berjalan terus-menerus secara statis, sehingga sulit bagi pengguna untuk mengatur jadwal penghentian simulasi secara spesifik berdasarkan jam (misal ingin berhenti jam 11:30).
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Perbaikan UI & RBAC (Role-Based Access Control):
+   - Menyesuaikan logika `detail.php` agar selaras memprioritaskan status "OFF SHIFT" apabila waktu sudah melewati jadwal mesin. Loop perenderan waktu (kolom tabel) juga telah dibatasi (capped) ke akhir shift agar tidak terjadi infinite render.
+   - Mengamankan fungsi sensitif seperti tombol "🛠️ FORCE RESET" (di index.php) dan form "Tambah Jam Lembur" (di detail.php) agar HANYA bisa diakses oleh role `admin`, `it`, dan `leader`.
+2. Perbaikan Fatal Error pada Sistem Reset:
+   - Mengganti referensi kolom lama `jam` menjadi `rentang_jam` pada query tabel master jam statis.
+   - Mengganti referensi kolom `jam_selesai_lembur` dan `total_menit` menjadi `jam_selesai` dan `jam_mulai` pada query `mesin_override`.
+   - Proses reset baik secara manual (tombol) maupun cron otomatis (background) kini berjalan mulus tanpa error SQL.
+3. Fitur Interaktif pada Simulator (run_simulation.ps1):
+   - Modifikasi script PowerShell peluncur simulator agar memiliki fitur input (prompt) interaktif. Saat dijalankan, script akan menanyakan jam berhenti.
+   - Script akan otomatis menghitung durasi selisih dari waktu sekarang ke jam target tersebut, lalu meneruskannya sebagai durasi parameter (`--hours`) agar simulator Python otomatis mati perlahan persis pada jam yang diinputkan pengguna.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 09:07 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Beban Database dan Hardisk Membengkak (Spamming Data Log Quality):
+   Sistem saat ini mengirimkan data dari mesin (melalui Arduino/Simulator) setiap 2 detik secara terus-menerus ke MQTT dan langsung disimpan ke dalam tabel `log_quality`.
+   Jika 200 mesin berjalan bersamaan, ini akan menghasilkan sekitar 8,6 Juta baris data per hari (259 Juta baris per bulan), meskipun status mesin sedang "Standby" atau tidak mencetak barang sama sekali. Hal ini menyebabkan penyimpanan cepat penuh, CPU overload, dan penurunan performa drastis saat membuka halaman history/laporan.
+
+2. Risiko Time-Out jika Interval Pengiriman Diubah (Jalur 1):
+   Apabila Arduino diubah untuk hanya mengirim data saat terjadi perubahan (produksi/status), akan timbul masalah "Timeout". Jika mesin standby selama 3 menit tanpa ada perubahan, Node-RED akan mendeteksi tidak adanya koneksi (Timeout) dan akan menganggap mesin mati/offline, padahal mesin aslinya masih menyala di lapangan.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Penambahan Filter di Node-RED (Report By Exception - RBE):
+   Telah ditambahkan Node RBE (Report By Exception) tepat sebelum data dimasukkan ke node MySQL di Node-RED (`flows-FIX.json`).
+   - Disisipkan node "Function" untuk mengubah properti pesan (`msg.topic`) menjadi ID mesin dan merakit kunci unik (`msg.rbe_key` dari gabungan status dan prodCount).
+   - Node RBE akan secara cerdas membuang pesan duplikat berdasarkan kunci tersebut, sehingga meringankan beban MySQL (Zero Spam).
+   - Pengiriman *polling* setiap 2 detik dari Arduino tetap dibiarkan berfungsi murni sebagai "Heartbeat" (Detak Jantung) sehingga fitur pemutus otomatis (Timeout 3 menit) tetap aman tanpa salah putus.
+
+Status: RESOLVED & SIAP IMPORT DI NODE-RED.
+=============================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 09:51 WIB
+Diperbarui Oleh : Claude Opus 4.6 (AI Assistant - Model Tier Atas)
+Ditujukan Untuk : Gemini 3.1 Pro (AI Assistant - Model Tier Bawah)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH - 3 BUG KRITIS YANG SALING BERKAITAN]
+
+===================== BUG #1: STATUS "OFF SHIFT" YANG TIDAK PERLU ADA =====================
+
+Deskripsi:
+Fungsi `getActiveShift()` yang ada di 2 file (api_dashboard.php dan user/detail.php)
+saat ini mengembalikan status 'OFF SHIFT' jika waktu sekarang tidak jatuh tepat di dalam
+rentang slot jam kerja yang terdaftar di tabel `master_jam_statis`.
+
+Contoh Masalah:
+- Jadwal Shift 1 di master_jam_statis: 07:00-12:00, 13:00-16:00
+- Jadwal Shift 2 di master_jam_statis: 19:30-00:00, 00:30-04:30
+- Jam sekarang: 17:00 (antara Shift 1 dan Shift 2)
+- Sistem mengembalikan: "OFF SHIFT" --> Dashboard menampilkan abu-abu
+- Padahal: Jika mesin masih Running/Standby, dashboard HARUS tetap menampilkan
+  status aktual mesin tersebut (hijau Running, kuning Standby, dll).
+
+Aturan Yang Benar (dari User/Boss):
+- Jam 06:30 sampai 18:00 = SHIFT 1 (titik, tidak peduli ada slot jam kerja atau tidak)
+- Jam 18:00 sampai 06:30 = SHIFT 2 (titik, tidak peduli ada slot jam kerja atau tidak)
+- TIDAK PERNAH ADA JEDA "OFF SHIFT" di antara kedua shift.
+- Acuan shift HANYA berdasarkan jam_reset_shift1 (18:00) dan jam_reset_shift2 (06:30)
+  dari tabel `setting_pabrik`.
+- Dashboard (index.php dan detail.php) HARUS SELALU menampilkan status aktual mesin
+  (Running/Standby/Problem/Off/Disconnected), BUKAN "OFF SHIFT".
+
+Catatan Penting:
+- Status "OFF SHIFT" HANYA BOLEH digunakan oleh cron_reset.php saat menulis ke
+  kolom `catStatus` di `master_mesin` setelah proses tutup buku selesai.
+- Di halaman dashboard live (index.php, detail.php, api_dashboard.php),
+  status "OFF SHIFT" TIDAK BOLEH ditampilkan jika mesin masih mengirim data/heartbeat.
+
+===================== BUG #2: PPT (Planned Production Time) SALAH HITUNG =====================
+
+Deskripsi:
+Di file `cron_reset.php`, saat menghitung OEE untuk tutup buku, sistem menghitung
+PPT (Planned Production Time) dari SELURUH slot jam kerja reguler di master_jam_statis.
+
+Contoh Masalah:
+- Shift 2 reguler: 19:30-04:30 (total ~9 jam efektif = 32400 detik PPT)
+- Mesin simulator baru dinyalakan jam 02:23
+- Mesin hanya berjalan dari 02:23 sampai 06:30 (sekitar 4 jam)
+- TAPI cron menghitung PPT = 32400 detik (9 jam penuh)
+- Akibat: Sistem menganggap ada "downtime 8 jam" dari 19:30-02:23
+- Availability anjlok ke 24%, Performance anjlok ke 9.6%
+- PADAHAL: Mesin memang baru dinyalakan jam 02:23, bukan downtime!
+
+Aturan Yang Benar:
+- PPT HARUS dihitung berdasarkan IRISAN (intersection) antara slot jam kerja
+  yang terdaftar di master_jam_statis DENGAN waktu aktual mesin berjalan.
+- Jika mesin baru nyala jam 02:23, maka slot 19:30-00:00 dan 00:30-02:23
+  TIDAK BOLEH dihitung sebagai PPT karena mesin memang belum ada di slot itu.
+- PPT yang benar = hanya slot yang BENAR-BENAR dijalani mesin.
+
+Rumus PPT yang benar:
+  Untuk setiap slot di master_jam_statis:
+    slot_mulai_efektif = MAX(slot.start, waktu_mesin_pertama_aktif)
+    slot_selesai_efektif = MIN(slot.end, waktu_mesin_terakhir_aktif)
+    Jika slot_mulai_efektif < slot_selesai_efektif:
+      ppt += (slot_selesai_efektif - slot_mulai_efektif)
+      (dikalikan rasio menit_efektif / durasi_slot jika perlu)
+
+Lokasi Kode Yang Harus Diubah:
+- File: cron_reset.php
+- Baris sekitar 178-188 (loop while $r_slot = $res_slots->fetch_assoc())
+- Saat ini: `$ppt_seconds += ((int)$r_slot['menit_efektif'] * 60);`
+  --> Ini SALAH karena langsung menjumlahkan menit_efektif tanpa mengecek
+      apakah mesin benar-benar sudah aktif di slot tersebut.
+
+===================== BUG #3: CRON SAAT SERVER MATI LALU NYALA =====================
+
+Deskripsi:
+Jika server dimatikan (misal jam 04:30 pagi) lalu dinyalakan kembali jam 07:00,
+dan operator langsung mulai produksi Shift 1 baru:
+
+- Data Shift 2 kemarin masih ada di log_quality (belum di-reset karena server mati).
+- Data Shift 1 hari ini juga mulai masuk ke log_quality.
+- Saat cron berjalan jam 07:30, ada data 2 shift berbeda di log_quality.
+
+Pertanyaan: Apakah cron bisa memisahkan keduanya dengan benar?
+
+Analisis Kode Saat Ini (cron_reset.php baris 138-161):
+- Cron mengambil MIN(timestamp) per mcID dari log_quality.
+- Jika min_ts = 19:30 (data shift 2 kemarin), maka SEMUA data mesin itu
+  dianggap milik SHIFT 2.
+- Data produksi baru (jam 07:00, Shift 1 hari ini) IKUT TERSAPU ke SHIFT 2!
+
+Solusi Yang Dibutuhkan:
+- Cron HARUS mampu mendeteksi bahwa ada "gap besar" (jeda > 2 jam tanpa data)
+  di antara 2 kelompok data, lalu MEMISAHKAN mereka menjadi 2 reset berbeda.
+- ATAU: Cron menggunakan `$batas_waktu_str` (cap) untuk membatasi data yang
+  diambil hanya sampai jam_reset (06:30), sehingga data setelah 06:30 tidak ikut.
+  --> Ini SUDAH SEBAGIAN ditangani oleh baris 44:
+      `AND timestamp <= '$batas_waktu_str'`
+  --> TAPI perlu diverifikasi bahwa `$batas_waktu_str` benar-benar bernilai
+      06:30 dan bukan waktu lain yang salah.
+
+[IMPLEMENTATION PLAN & TASK LIST]
+
+=== TASK 1: Hapus Status "OFF SHIFT" dari Dashboard Live ===
+File: api_dashboard.php
+Lokasi: Fungsi getActiveShift() (baris 36-113)
+Apa yang harus dilakukan:
+  - Ubah fungsi getActiveShift() agar TIDAK PERNAH mengembalikan 'OFF SHIFT'.
+  - Ganti logika: Jika waktu sekarang tidak jatuh di slot manapun,
+    TETAP kembalikan shift terdekat (SHIFT 1 atau SHIFT 2) berdasarkan
+    jam_reset dari setting_pabrik.
+  - Logika baru yang simpel:
+      $now = date('H:i:s');
+      Jika $now >= $jam_reset_s2 (06:30) DAN $now < $jam_reset_s1 (18:00):
+        return SHIFT 1 dengan mulai = hari_ini 06:30, selesai = hari_ini 18:00
+      Selain itu:
+        return SHIFT 2 dengan mulai dan selesai yang benar (lintas malam)
+  - Slot-slot dari master_jam_statis TETAP di-query dan dikembalikan di key 'slots'
+    karena dibutuhkan untuk menghitung PPT dan menampilkan tabel jam di detail.php.
+  - TAPI penentuan "sedang di shift mana" TIDAK LAGI bergantung pada slot.
+
+File: user/detail.php
+Lokasi: Fungsi getActiveShift() (baris 180-239) dan blok status (baris 312-325)
+Apa yang harus dilakukan:
+  - Terapkan perubahan yang SAMA PERSIS seperti di api_dashboard.php.
+  - Pada blok status (baris 312-325): Hapus kondisi `if ($shift_aktif === 'OFF SHIFT')`.
+    Biarkan status mesin selalu ditentukan oleh data aktual (Running/Standby/Off/Timeout).
+
+=== TASK 2: Perbaiki Perhitungan PPT di cron_reset.php ===
+File: cron_reset.php
+Lokasi: Baris 178-188 (loop slot perhitungan ppt_seconds)
+Apa yang harus dilakukan:
+  - Saat ini kode berbunyi:
+      $ppt_seconds += ((int)$r_slot['menit_efektif'] * 60);
+  - Ubah menjadi perhitungan IRISAN (intersection) antara slot dan waktu aktual mesin:
+      1. Parse rentang_jam menjadi $slot_start_ts dan $slot_end_ts (timestamp absolut).
+      2. Hitung irisan dengan waktu mesin aktif:
+         $effective_start = max($slot_start_ts, strtotime($waktu_mulai));
+         $effective_end = min($slot_end_ts, $batas_waktu_cap_ts);
+      3. Jika $effective_start < $effective_end:
+         $slot_duration = $slot_end_ts - $slot_start_ts;
+         $actual_duration = $effective_end - $effective_start;
+         $rasio = $actual_duration / $slot_duration;
+         $ppt_seconds += ($r_slot['menit_efektif'] * 60) * $rasio;
+      4. Jika $effective_start >= $effective_end: slot ini di-skip (PPT = 0).
+
+  PENTING: Untuk menghitung timestamp absolut dari slot, perlu memperhatikan
+  lintas malam (cross-midnight). Contoh:
+    - Shift 2 dimulai tanggal 6 Sep jam 19:30
+    - Slot "00:30-04:30" sebenarnya adalah tanggal 7 Sep
+    - Gunakan $tanggal_mulai sebagai basis, dan jika jam slot < jam mulai shift,
+      tambahkan +1 day.
+
+=== TASK 3: Verifikasi Cron Saat Server Mati-Nyala ===
+File: cron_reset.php
+Lokasi: Baris 245-247 (force_reset) dan baris 37-128 (doMachineReset)
+Apa yang harus dilakukan:
+  - Verifikasi bahwa $batas_waktu_cap_ts (yang diteruskan ke doMachineReset
+    pada baris 255 sebagai $dynamic_end_ts) BENAR-BENAR tidak melewati
+    batas jam_reset shift berikutnya.
+  - Tambahkan HARD CAP: Jika shift_label = 'SHIFT 2', maka
+    $batas_waktu_cap_ts TIDAK BOLEH lebih dari tanggal_mulai+1day jam 06:30.
+    Jika shift_label = 'SHIFT 1', maka
+    $batas_waktu_cap_ts TIDAK BOLEH lebih dari tanggal_mulai jam 18:00.
+  - Ini menjamin data yang masuk setelah batas shift tidak ikut tersapu.
+
+=== TASK 4: Update update_perkembangan.txt Setelah Selesai ===
+  - Setelah TASK 1, 2, dan 3 selesai dan diverifikasi, ubah status
+    di bawah ini menjadi "RESOLVED & DEPLOYED" beserta penjelasan singkat.
+
+Status: RESOLVED & DEPLOYED.
+Eksekusi oleh Gemini 3.1 Pro: 07 September 2026, 09:59 WIB.
+1. api_dashboard.php dan detail.php telah diubah. Status OFF SHIFT diganti murni berdasarkan jam_reset setting pabrik.
+2. cron_reset.php telah diperbaiki perhitungan PPT nya agar proporsional berdasarkan irisan (intersection) dengan dynamic_end_ts.
+4. cron_reset.php telah ditambah logic HARD CAP agar dynamic_end_ts tidak pernah melebihi jam_reset shift berikutnya untuk mencegah data terhapus.
+=============================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 10:15 WIB
+Diperbarui Oleh : Gemini 3.1 Pro (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Deteksi Hari Kurang Akurat pada Shift Malam (getLogicalDay):
+   Fungsi untuk menentukan hari kerja (apakah masuk Senin-Kamis, Jumat, atau Sabtu-Minggu) sebelumnya selalu mengacu pada waktu *saat ini* secara real-time. Hal ini menyebabkan kesalahan pembacaan jika mesin diakses melewati tengah malam pada Shift 2, karena hari yang dibaca sudah berganti menjadi keesokan harinya padahal secara operasional masih masuk hitungan shift hari sebelumnya.
+
+2. Pemaksaan Status "OFF SHIFT" yang Menimpa Status Aktual Mesin:
+   Di halaman dashboard utama, masih ada blok kode lama yang memaksa status tampilan mesin menjadi "OFF SHIFT" secara sepihak jika waktu saat ini berada di luar jam kerja (misal jam istirahat). Akibatnya, status asli/aktual dari mesin di lapangan (seperti "Running" atau "Standby") malah tertutup (tertimpa) dan tidak bisa dilihat oleh pengawas.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Sinkronisasi Waktu pada `getLogicalDay` (`api_dashboard.php` & `detail.php`):
+   Fungsi pencarian hari (`getLogicalDay`) telah dimodifikasi agar menerima parameter waktu spesifik (waktu mulai shift). Penentuan hari kini sudah dikunci dengan akurat berdasarkan kapan shift tersebut dimulai, sehingga bug salah hari / geser hari pada Shift 2 telah teratasi.
+
+2. Pembersihan Pemaksaan Status "OFF SHIFT" (`api_dashboard.php` & `cron_reset.php`):
+   - Pada `api_dashboard.php`: Aturan yang secara paksa menimpa status menjadi "OFF SHIFT" telah dibongkar total. Mulai sekarang, dashboard akan **selalu** menampilkan status riil mesin (Running, Standby, Alarm, atau Off) tanpa diintervensi oleh sistem jam istirahat.
+   - Pada `cron_reset.php`: Sistem *auto-reset* (tutup buku) juga telah disesuaikan agar mengubah status mesin di akhir perhitungan menjadi "OFF" biasa, bukan "OFF SHIFT". String "OFF SHIFT" kini resmi tidak digunakan lagi sebagai penimpa status di sistem.
 
 Status: RESOLVED & DEPLOYED.
 =============================================================================

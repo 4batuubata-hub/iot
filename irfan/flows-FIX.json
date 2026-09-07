@@ -180,7 +180,7 @@
                 "f7176f1437a2a6df"
             ],
             [
-                "cb6629c14e852d22"
+                "prep_rbe_filter"
             ],
             [
                 "54dfd57d3414f99f"
@@ -494,5 +494,44 @@
         "modules": {
             "node-red-node-mysql": "3.0.2"
         }
+    },
+    {
+        "id": "prep_rbe_filter",
+        "type": "function",
+        "z": "9cb20855f2850f4e",
+        "name": "Siapkan Kunci RBE",
+        "func": "msg.rbe_key = msg.payload.mcInfo + \"_\" + msg.payload.prodCount;\nmsg.topic = String(msg.payload.mcID);\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 340,
+        "wires": [
+            [
+                "rbe_filter"
+            ]
+        ]
+    },
+    {
+        "id": "rbe_filter",
+        "type": "rbe",
+        "z": "9cb20855f2850f4e",
+        "name": "Filter Duplikat",
+        "func": "rbe",
+        "gap": "",
+        "start": "",
+        "inout": "out",
+        "sep": "",
+        "property": "rbe_key",
+        "x": 330,
+        "y": 400,
+        "wires": [
+            [
+                "cb6629c14e852d22"
+            ]
+        ]
     }
 ]
