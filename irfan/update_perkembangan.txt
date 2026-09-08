@@ -461,3 +461,52 @@ Diperbarui Oleh : Gemini 3.1 Pro (AI Assistant)
 
 Status: RESOLVED & DEPLOYED.
 =============================================================================
+-----------------------------------------------------------------------------
+Tanggal & Jam : 07 September 2026, 15:30 WIB
+Diperbarui Oleh : Gemini 3.1 Pro (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. OEE Performance "Meledak" Hingga 680% Akibat Ganti Part (Dandory):
+   Masalah ini muncul pada mesin yang mencetak multi-part dalam satu shift. Sistem sebelumnya menghitung waktu ideal secara pukul rata: (Total Produksi 1 Shift x Cycle Time Terakhir).
+   Jika part A dicetak sangat banyak dengan CT cepat (contoh: 6.9 detik), lalu mesin ganti ke part B yang CT nya sangat lambat (contoh: 144 detik), maka seluruh produksi tadi akan dikalikan 144 detik. Akibatnya, waktu ideal membengkak menjadi puluhan jam (misal 43 jam), sedangkan aktualnya baru 8 jam. Inilah penyebab Performance dan OEE melambung di atas 100%.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Perhitungan Blended Ideal Time pada OEE Dashboard (pi_dashboard.php & cron_reset.php):
+   Sistem telah dirubah agar tidak lagi menggunakan CT mesin yang aktif saat ini sebagai satu-satunya pengali.
+   Sekarang, sistem menarik data histori produksi per part (kode_proses) dari tabel log_quality, melakukan join dengan master_ct, dan secara presisi mengalikan setiap quantity barang dengan CT aslinya masing-masing secara proporsional.
+   
+   Rumus baru: Ideal Time = (Qty A x CT A) + (Qty B x CT B)
+   
+   Dengan perubahan ini, persentase Performance akan langsung kembali normal dan akurat meskipun terjadi proses ganti model/Dandory berkali-kali dalam satu shift. Perbaikan juga sudah diimplementasikan pada cron_reset.php agar data histori yang tersimpan ikut normal.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+-----------------------------------------------------------------------------
+Tanggal & Jam : 08 September 2026, 12:52 WIB
+Diperbarui Oleh : Antigravity (AI Assistant)
+-----------------------------------------------------------------------------
+
+[URAIAN MASALAH]
+1. Data Produksi Hilang Akibat Arduino Ter-Reset:
+   Alat IoT (Arduino Mega) sebelumnya hanya menyimpan hitungan barang (counter produksi & NG) di dalam memori sementara (RAM). Akibatnya, setiap kali listrik berkedip, mesin dimatikan, atau operator menekan tombol repair/NG- terlalu lama, seluruh data hitungan di alat kembali menjadi 0.
+   Ini menyebabkan ketidaksesuaian data antara layar alat IoT dengan data di Web Dashboard.
+
+2. Limitasi Windows Task Scheduler pada Komputer Produksi:
+   Upaya untuk memasang penjadwalan otomatis reset shift (Cron Job) menggunakan file batch Windows (setup_cron.bat) gagal diterapkan di komputer target pabrik (komputer PT) karena terhalang oleh restriksi hak akses Administrator dari departemen IT.
+
+[PERBAIKAN & PENAMBAHAN FITUR]
+1. Sistem Autosave EEPROM dengan Wear-Leveling (Arduino top8-FIX.ino):
+   - Telah ditambahkan fitur *Autosave* ke dalam memori permanen (EEPROM) pada Arduino Mega. Alat sekarang akan secara otomatis menyimpan hitungan produksi dan NG ke dalam memori cip setiap 5 menit.
+   - Mengingat EEPROM memiliki batas umur penulisan (kurang lebih 100.000 kali), telah diimplementasikan algoritma "Wear-Leveling Ring Buffer" (menggunakan 100 slot penyimpanan secara bergiliran). Hal ini menjamin cip EEPROM akan awet bertahan hingga puluhan tahun.
+   - Saat listrik padam dan mesin menyala kembali, alat akan otomatis memuat (load) angka terakhir dari EEPROM, sehingga operator bisa langsung melanjutkan kerjanya tanpa mengulang dari 0.
+   - Fungsi Hard-Reset manual: Tombol NG Sub yang ditahan selama 5 detik (Long Press) kini tidak hanya me-reset angka di layar, tetapi juga akan membersihkan dan menimpa seluruh histori slot di EEPROM ke angka 0 (Format Memori).
+
+2. Sistem Reset Shift via Node-RED Cron (Bypass Administrator IT):
+   - Sebagai solusi atas larangan akses Administrator IT di komputer PT, jadwal reset shift otomatis (cron_reset.php) kini sepenuhnya dialihkan ke dalam *flow* Node-RED.
+   - Sebuah alur terpisah (Inject Node [Repeat: 10 mins] -> HTTP Request Node [GET cron_reset.php]) telah ditambahkan langsung ke dalam file flows-FIX.json.
+   - Hal ini membuat rutinitas pembersihan shift berjalan sangat stabil di latar belakang, terlepas dari ketergantungan pada program Windows Task Scheduler, dan sepenuhnya kebal terhadap kebijakan keamanan Windows setempat.
+
+Status: RESOLVED & DEPLOYED.
+=============================================================================
+

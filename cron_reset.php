@@ -80,9 +80,18 @@ function doMachineReset($conn, $mcID, $max_q, $max_ng, $max_dt, $shift_label, $t
         
         $offset_produksi = $conn->query("SELECT offset_produksi FROM master_mesin WHERE id_mesin = '$mcID' OR mcID = '$mcID'")->fetch_assoc()['offset_produksi'] ?? 0;
         
-        $sql_prod_logs = "SELECT SUM(delta_prodCount) as total_prod, MAX(timestamp) as max_ts FROM log_quality WHERE mcID = '$mcID' AND id <= $max_q AND timestamp <= '$batas_waktu_str'";
+        $sql_prod_logs = "
+            SELECT 
+                SUM(lq.delta_prodCount) as total_prod, 
+                MAX(lq.timestamp) as max_ts,
+                SUM(lq.delta_prodCount * COALESCE(c.ct_pcs, 0)) as total_ideal_sec
+            FROM log_quality lq 
+            LEFT JOIN master_ct c ON lq.kode_proses = c.kode
+            WHERE lq.mcID = '$mcID' AND lq.id <= $max_q AND lq.timestamp <= '$batas_waktu_str'
+        ";
         $res_prod_logs = $conn->query($sql_prod_logs)->fetch_assoc();
         $prod_r = $offset_produksi + (int)($res_prod_logs['total_prod'] ?? 0);
+        $total_ideal_sec_r = ($offset_produksi * $ideal_ct) + (float)($res_prod_logs['total_ideal_sec'] ?? 0);
         $waktu_selesai = $res_prod_logs['max_ts'] ?? $batas_waktu_str;
         
         $ng_r = $conn->query("SELECT COALESCE(SUM(qty_ng), 0) as qty FROM log_ng WHERE mcID = '$mcID' AND id <= $max_ng AND timestamp <= '$batas_waktu_str'")->fetch_assoc()['qty'] ?? 0;
@@ -93,7 +102,7 @@ function doMachineReset($conn, $mcID, $max_q, $max_ng, $max_dt, $shift_label, $t
         if ($operating_time_seconds < 0) $operating_time_seconds = 0;
         
         $a_r = ($ppt_seconds > 0) ? ($operating_time_seconds / $ppt_seconds) * 100 : 0;
-        $p_r = ($operating_time_seconds > 0) ? (($ideal_ct * $prod_r) / $operating_time_seconds) * 100 : 0;
+        $p_r = ($operating_time_seconds > 0) ? ($total_ideal_sec_r / $operating_time_seconds) * 100 : 0;
         $q_r = ($prod_r > 0) ? (($prod_r - $ng_r) / $prod_r) * 100 : 0;
         
         if ($a_r > 100) $a_r = 100;

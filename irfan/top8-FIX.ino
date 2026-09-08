@@ -77,6 +77,17 @@ char timestamp[30]; // Buffer timestamp format ISO
 #define EEPROM_DISPLAY_ID_ADDR 40 // Alamat simpan nama tampilan mesin
 #define EEPROM_INIT_FLAG 0      // Alamat flag inisialisasi
 
+// EEPROM Wear Leveling untuk Counter Produksi
+#define EEPROM_COUNTER_START  200     // Alamat mulai untuk array counter
+#define EEPROM_COUNTER_SLOTS  100     // Jumlah slot (wear leveling)
+#define EEPROM_COUNTER_SLOT_SIZE 16   // Ukuran per slot: 16 byte
+unsigned long currentEepromWriteIndex = 0;
+int currentEepromSlot = -1;
+unsigned long lastSaveTime = 0;
+unsigned long lastSavedCycles = 0;
+unsigned long lastSavedNGCount = 0;
+const unsigned long SAVE_INTERVAL_MS = 300000; // 5 Menit (300000 ms)
+
 // Arduino Nano I2C Slave (Counter produksi)
 #define NANO_I2C_ADDR    8      // Alamat I2C Arduino Nano
 
@@ -292,6 +303,8 @@ void writeStringToEEPROM(int addr, String data);
 String readStringFromEEPROM(int addr);
 void writeByteToEEPROM(int addr, byte val);
 byte readByteFromEEPROM(int addr);
+void saveCountersToEEPROM(unsigned long cycles, unsigned long ng);
+void loadCountersFromEEPROM();
 unsigned int readCounterFromNano();
 String checkDowntimeButton();
 
@@ -409,6 +422,9 @@ void setup() {
     mcID = "";
     Serial.println(F("[EEPROM] Kosong, perlu setup."));
   }
+
+  // --- Load Counter Produksi dari EEPROM ---
+  loadCountersFromEEPROM();
 
   // --- Mulai State Machine ---
   changeState(BOOT);
@@ -954,6 +970,16 @@ void loop() {
       Serial.println(prodCount);
   }
 
+  // --- INTERVAL SAVING KE EEPROM ---
+  if (currentMillis - lastSaveTime >= SAVE_INTERVAL_MS) {
+    unsigned long currentTotalCycles = cycleCountSaved + cycleCountReceived;
+    if (currentTotalCycles != lastSavedCycles || NGCount != lastSavedNGCount) {
+      saveCountersToEEPROM(currentTotalCycles, NGCount);
+    }
+    // Update lastSaveTime meski tidak ada perubahan agar tidak nge-cek terus-menerus
+    lastSaveTime = currentMillis; 
+  }
+
   // =====================================================================
   //          STATE-DEPENDENT TASKS (Hanya jalan saat produksi)
   // =====================================================================
@@ -1205,6 +1231,10 @@ void readNGButtons() {
       prodCount = 0;
       NGCount   = 0;
       OKCount   = 0;
+
+      // Reset EEPROM Counters
+      saveCountersToEEPROM(0, 0);
+      currentEepromWriteIndex = 0; // Reset index back to 0 for a fresh start
 
       // Reset memori lokal NG
       for (int i = 0; i < 20; i++) {
@@ -1547,6 +1577,109 @@ byte readByteFromEEPROM(int addr) {
   Wire.endTransmission();
   Wire.requestFrom(EEPROM_ADDRESS, 1);
   return Wire.available() ? Wire.read() : 0xFF;
+}
+
+// Load counter dari EEPROM saat Boot
+void loadCountersFromEEPROM() {
+  unsigned long highestIndex = 0;
+  int bestSlot = -1;
+  unsigned long bestCycles = 0;
+  unsigned long bestNG = 0;
+  
+  for (int slot = 0; slot < EEPROM_COUNTER_SLOTS; slot++) {
+    int addr = EEPROM_COUNTER_START + (slot * EEPROM_COUNTER_SLOT_SIZE);
+    
+    Wire.beginTransmission(EEPROM_ADDRESS);
+    Wire.write((addr >> 8) & 0xFF);
+    Wire.write(addr & 0xFF);
+    Wire.endTransmission();
+    
+    Wire.requestFrom((int)EEPROM_ADDRESS, 16);
+    byte buffer[16];
+    for (int i = 0; i < 16; i++) {
+      buffer[i] = Wire.available() ? Wire.read() : 0;
+    }
+    
+    if (buffer[0] == 0xAA) {
+      byte crc = 0;
+      for (int i = 0; i < 13; i++) {
+        crc ^= buffer[i];
+      }
+      if (crc == buffer[13]) {
+        unsigned long idx = ((unsigned long)buffer[1] << 24) | ((unsigned long)buffer[2] << 16) | ((unsigned long)buffer[3] << 8) | (unsigned long)buffer[4];
+        if (bestSlot == -1 || idx > highestIndex) { 
+          highestIndex = idx;
+          bestSlot = slot;
+          bestCycles = ((unsigned long)buffer[5] << 24) | ((unsigned long)buffer[6] << 16) | ((unsigned long)buffer[7] << 8) | (unsigned long)buffer[8];
+          bestNG = ((unsigned long)buffer[9] << 24) | ((unsigned long)buffer[10] << 16) | ((unsigned long)buffer[11] << 8) | (unsigned long)buffer[12];
+        }
+      }
+    }
+  }
+  
+  if (bestSlot != -1) {
+    currentEepromSlot = bestSlot;
+    currentEepromWriteIndex = highestIndex;
+    cycleCountSaved = bestCycles; // Masukkan ke offset
+    NGCount = bestNG;
+    
+    lastSavedCycles = bestCycles;
+    lastSavedNGCount = bestNG;
+    
+    Serial.print(F("[EEPROM] Restored Counter Slot ")); Serial.print(bestSlot);
+    Serial.print(F(" | Cycles: ")); Serial.print(bestCycles);
+    Serial.print(F(" | NG: ")); Serial.println(bestNG);
+  } else {
+    Serial.println(F("[EEPROM] No valid counter found. Starting 0."));
+    cycleCountSaved = 0;
+    NGCount = 0;
+    currentEepromWriteIndex = 0;
+    currentEepromSlot = -1; // Next save -> slot 0
+    saveCountersToEEPROM(0, 0); // Init slot 0
+  }
+  lastSaveTime = millis();
+}
+
+// Simpan counter ke EEPROM (Wear Leveling)
+void saveCountersToEEPROM(unsigned long cycles, unsigned long ng) {
+  currentEepromWriteIndex++;
+  currentEepromSlot = (currentEepromSlot + 1) % EEPROM_COUNTER_SLOTS;
+  int addr = EEPROM_COUNTER_START + (currentEepromSlot * EEPROM_COUNTER_SLOT_SIZE);
+  
+  byte buffer[16];
+  buffer[0] = 0xAA; // Magic
+  // Write Index (4 bytes)
+  buffer[1] = (currentEepromWriteIndex >> 24) & 0xFF;
+  buffer[2] = (currentEepromWriteIndex >> 16) & 0xFF;
+  buffer[3] = (currentEepromWriteIndex >> 8) & 0xFF;
+  buffer[4] = currentEepromWriteIndex & 0xFF;
+  // Cycles (4 bytes)
+  buffer[5] = (cycles >> 24) & 0xFF;
+  buffer[6] = (cycles >> 16) & 0xFF;
+  buffer[7] = (cycles >> 8) & 0xFF;
+  buffer[8] = cycles & 0xFF;
+  // NGCount (4 bytes)
+  buffer[9] = (ng >> 24) & 0xFF;
+  buffer[10] = (ng >> 16) & 0xFF;
+  buffer[11] = (ng >> 8) & 0xFF;
+  buffer[12] = ng & 0xFF;
+  
+  // CRC
+  byte crc = 0;
+  for (int i = 0; i < 13; i++) {
+    crc ^= buffer[i];
+  }
+  buffer[13] = crc;
+  buffer[14] = 0; // reserved
+  buffer[15] = 0; // reserved
+  
+  for(int i = 0; i < 16; i++) {
+    writeByteToEEPROM(addr + i, buffer[i]);
+  }
+  
+  lastSavedCycles = cycles;
+  lastSavedNGCount = ng;
+  lastSaveTime = millis();
 }
 
 // =====================================================================

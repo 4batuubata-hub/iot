@@ -168,12 +168,26 @@ if ($result && $result->num_rows > 0) {
 
         $offset_produksi = (int)($row['offset_produksi'] ?? 0);
         
-        $sql_prod_logs = "SELECT SUM(delta_prodCount) as total_prod FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
+        $sql_prod_logs = "
+            SELECT 
+                SUM(lq.delta_prodCount) as total_prod,
+                SUM(lq.delta_prodCount * COALESCE(mc.ct_pcs, 0)) as total_ideal_sec
+            FROM log_quality lq
+            LEFT JOIN master_ct mc ON lq.kode_proses = mc.kode
+            WHERE lq.mcID = '$mcID' 
+              AND lq.timestamp >= '$waktu_mulai' 
+              AND lq.timestamp <= '$waktu_selesai'
+        ";
         $res_prod_logs = $conn->query($sql_prod_logs);
         
+        $ideal_ct = (float)($row['ct_pcs'] ?? 0);
         $prodCount = $offset_produksi;
+        $total_ideal_sec = $offset_produksi * $ideal_ct; // Base ideal time for manual offset
+        
         if ($res_prod_logs && $res_prod_logs->num_rows > 0) {
-            $prodCount += (int)$res_prod_logs->fetch_assoc()['total_prod'];
+            $row_prod = $res_prod_logs->fetch_assoc();
+            $prodCount += (int)$row_prod['total_prod'];
+            $total_ideal_sec += (float)$row_prod['total_ideal_sec'];
         }
 
         $sql_ng = "SELECT COALESCE(SUM(qty_ng), 0) as shift_ng FROM log_ng WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
@@ -309,11 +323,10 @@ if ($result && $result->num_rows > 0) {
         }
         
         // 3. Terapkan Logika Proportional Smart Break
-        $ideal_ct = (float)($row['ct_pcs'] ?? 0);
         $total_real_dt = $historical_real_dt + $ongoing_real_dt;
         $total_whitelist_dt = $historical_whitelist_dt + $ongoing_whitelist_dt;
         
-        $ideal_time_sec = $prodCount * $ideal_ct;
+        $ideal_time_sec = $total_ideal_sec;
         $allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $total_real_dt);
         $final_whitelist_dt = min($total_whitelist_dt, $allowed_whitelist_sec);
         
@@ -323,10 +336,8 @@ if ($result && $result->num_rows > 0) {
         $operating_time_seconds = $ppt_seconds - $total_loss_detik;
         if ($operating_time_seconds < 0) $operating_time_seconds = 0;
         
-        $ideal_ct = floatval($row['ct_pcs'] ?? 0);
-        
         $availability = ($ppt_seconds > 0) ? ($operating_time_seconds / $ppt_seconds) * 100 : 0;
-        $performance = ($operating_time_seconds > 0) ? (($ideal_ct * $prodCount) / $operating_time_seconds) * 100 : 0;
+        $performance = ($operating_time_seconds > 0) ? ($ideal_time_sec / $operating_time_seconds) * 100 : 0;
         $quality = ($prodCount > 0) ? (($prodCount - $NGCount) / $prodCount) * 100 : 0;
         
         // if ($availability > 100) $availability = 100; // Removed cap
