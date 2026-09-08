@@ -510,3 +510,25 @@ Diperbarui Oleh : Antigravity (AI Assistant)
 Status: RESOLVED & DEPLOYED.
 =============================================================================
 
+
+[CATATAN TAMBAHAN: LOGIKA PENGUNCIAN WAKTU (TIME CAPPING) PADA RESET OTOMATIS]
+Sebagai referensi cara kerja fungsi "Sapu Ranjau" pada cron_reset.php:
+
+Sistem dirancang untuk sangat adil dalam menghitung Waktu Kosong (Downtime/Losstime) dengan membandingkan [Aktivitas Terakhir] mesin melawan [Jadwal Resmi] pabrik.
+Nilai waktu akhir mesin saat reset (Dynamic End Time) selalu mengambil nilai yang PALING BESAR di antara keduanya.
+
+Studi Kasus 1: Lembur Siluman (Pulang Telat)
+- Jadwal Resmi Pabrik = 16:00
+- Operator terus bekerja sampai = 17:30 (Aktivitas Terakhir)
+- Cron berpatroli jam = 18:00 (waktu batas reset Shift)
+- Hasil: Sistem mengunci batas akhir mesin di jam 17:30 (karena 17:30 lebih besar dari 16:00).
+- Keadilan: Seluruh produksi lembur dicatat secara sah. Waktu jeda dari jam 17:30 ke 18:00 diabaikan (TIDAK menjadi losstime) sehingga OEE tetap tinggi dan terjaga.
+
+Studi Kasus 2: Pulang Cepat (Mesin Mati Duluan)
+- Jadwal Resmi Pabrik = 16:00
+- Operator mematikan mesin jam = 15:45 (Aktivitas Terakhir)
+- Cron berpatroli jam = 18:00 (waktu batas reset Shift)
+- Hasil: Sistem mengunci batas akhir mesin di jam 16:00 (karena 16:00 lebih besar dari 15:45).
+- Keadilan: Selisih 15 menit (antara 15:45 ke 16:00) akan dihitung secara sah sebagai Waktu Kosong (Downtime), karena operator memotong waktu target produksi dan pulang sebelum waktunya. Namun, kekosongan 2 jam setelahnya (dari 16:00 ke 18:00) akan langsung dibuang/diabaikan dan tidak merusak perhitungan akhir OEE. Performa dihitung murni dan presisi 100%.
+=============================================================================
+
