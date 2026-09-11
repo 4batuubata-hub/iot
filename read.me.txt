@@ -1,0 +1,1209 @@
+Act as: Senior IoT, ESP32, dan C++ Firmware Engineer,
+
+Konteks Proyek:
+Saya sedang membuat "Smart Machine Monitoring System (SMMS)" untuk PT. CNC menggunakan ESP32, LCD I2C 20x4, Keypad 4x4, dan MQTT. Sistem backend (Node-RED + MySQL) sudah siap.
+Saya membutuhkan kode ESP32 dengan arsitektur State Machine (Finite State Machine) tanpa delay() blocking, menggunakan Preferences.h untuk menyimpan memori permanen, serta implementasi MQTT Callback untuk komunikasi Request-Response dua arah dengan Node-RED.
+
+CATATAN HARDWARE (WAJIB DIIKUTI):
+
+// SDA = 21, SCL = 22
+#define mcON 34      
+#define mcRun 35     
+#define alarmPin 39  
+#define btnCount 23
+#define ngAdd 32     // Tombol NG +
+#define ngSub 33     // Tombol NG -
+
+saya masih memliki problem, saat saya NG add lalu masukkan qty 2 dan kode NG 29 itu berhasil. saat saya NG - dengan QTY 1 dan kode NG 35 itu juga berhasil. buat saya ini adalah abnormal. tolong fix ini
+
+
+#define btnUp 4      
+#define btnDown 12   
+#define btnDandory 5
+#define btnMinum 15
+// Keypad di pin: baris {19, 18, 17, 16}, kolom {25, 26, 27, 14}
+
+Berikut adalah Alur UI/UX & Logika Sistem yang diimplementasikan oleh iot:
+
+1. Boot Sequence (State: BOOT)
+
+Saat dinyalakan, LCD 20x4 tampil: Baris 1: "    SMART MACHINE   ", Baris 2: "  MONITORING SYSTEM ", Baris 4: "       PT. CNC      ".
+
+Tahan 3 detik (gunakan millis()), lalu tampilkan: "    Please wait.    "
+
+2. Hidden Setup Mode (State: SETUP_MODE)
+
+Jika saat boot tombol btnUp dan btnDown ditekan BERSAMAAN, masuk mode setup.
+
+Layar meminta input: "Masukkan ID Mesin:". Input via keypad, tekan 'D'.
+
+Kirim ke MQTT dan tunggu konfirmasi. Jika "Terdaftar", simpan permanen dengan <Preferences.h>.
+
+3. Operator Login (State: LOGIN_NIK & SKILL_CHECK)
+
+Layar utama awal meminta: "Masukkan NIK:". Input NIK, tekan 'D'. Publish MQTT, tunggu balasan (Callback).
+
+Jika salah: "Coba Lagi".
+
+Jika benar: Cek Skill Matrix. Jika level < 3: "Skill Matrix tidak terpenuhi". Jika >= 3: "Berhasil, Level [X]/4", lanjut input proses.
+
+4. Input Kode Proses (State: INPUT_PROCESS & CONFIRM_PROCESS)
+
+Layar tampil: "Masukkan Kode Proses". Input via keypad, tekan 'D'. Publish MQTT.
+
+Server membalas dengan JSON (Nama Part, Part Number, Proses). Tampilkan di LCD (Baris 1-3).
+
+Tekan 'D' untuk Lanjut, atau 'C' untuk Batal/Input ulang.
+
+5. Main Monitoring Screen (State: MAIN_SCREEN & INFO_SCREEN)
+
+Layar utama saat produksi berjalan (Gunakan blok fungsi updatePartID, updateProsesDesc, updatemcInfo, updateBarisBawah yang berbasis millis()).
+
+Keypad: A = Ganti NIK, B = Ganti Proses, * = Info Screen (Tampil Part, No, Proses, ID Mesin).
+
+6. Logika NG, Repair, dan Reset (State: INPUT_NG_QTY & INPUT_NG_CODE) - FITUR BARU
+Berada di Main Screen, jika tombol fisik ditekan:
+
+Jika NG - ditahan selama 5 detik: Reset seluruh counter (prodCount, NGCount, OKCount) menjadi 0.
+
+Jika NG + ditekan (Short Press - Tambah NG):
+
+Pindah State, Layar berubah: "Masukkan Qty NG:". Operator input angka, tekan 'D'.
+
+Pindah State, Layar berubah: "Masukkan Kode NG:". Operator input angka/huruf, tekan 'D'.
+
+Setelah D ditekan, kembalikan layar ke MAIN_SCREEN, tambah nilai NGCount sesuai Qty, dan kirim payload JSON via MQTT (Kategori: Tambah NG, Qty, Kode NG) ke server.
+
+Jika NG - ditekan (Short Press - Proses Repair):
+
+Pindah State, Layar berubah: "Masukkan Qty Repair:". Operator input angka, tekan 'D'.
+
+Pindah State, Layar berubah: "Masukkan Kode Repair:". Operator input angka/huruf, tekan 'D'.
+
+Setelah D ditekan, kembalikan layar ke MAIN_SCREEN, kurangi nilai NGCount sesuai Qty, dan kirim payload JSON via MQTT (Kategori: Repair NG, Qty, Kode) ke server.
+
+Instruksi Tambahan untuk Struktur Kode C++:
+
+Buat enum SystemState { BOOT, SETUP_MODE, WAIT_SETUP_REPLY, LOGIN_NIK, WAIT_NIK_REPLY, SKILL_CHECK, INPUT_PROCESS, WAIT_PROCESS_REPLY, CONFIRM_PROCESS, MAIN_SCREEN, INFO_SCREEN, INPUT_NG_QTY, INPUT_NG_CODE };
+
+Buat flag variabel seperti bool isRepairMode = false; untuk membedakan apakah State INPUT_NG_QTY dipicu oleh tombol NG+ atau NG-.
+
+Buat fungsi void callback(char* topic, byte* payload, unsigned int length) untuk menangkap JSON MQTT.
+
+Pastikan SEMUA pembacaan keypad dan tombol tidak menggunakan delay() blocking. Semuanya wajib pakai millis().
+
+Cuplikan Fungsi UI Layar Utama Saya:
+[PASTE-KAN KODE void updatePartID() SAMPAI void updateMcStatus() MILIK ANDA DI SINI]
+Tolong berikan Full Code ESP32 (jangan sampai terpotong) yang diarsiteki dengan kokoh menggunakan FSM, non-blocking, dan siap deploy.
+
+##### Dibawah ini adalah table di DB saya ####
+-- 1. Struktur Tabel `history_ng`
+CREATE TABLE `history_ng` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `timestamp` timestamp NULL DEFAULT current_timestamp(),
+  `mcID` varchar(50) NOT NULL,
+  `kode_ng` varchar(20) NOT NULL,
+  `qty_ng` int(11) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `mcID` (`mcID`),
+  KEY `timestamp` (`timestamp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 2. Struktur Tabel `log_downtime`
+CREATE TABLE `log_downtime` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `mcID` varchar(50) NOT NULL,
+  `kode_dt` varchar(20) NOT NULL,
+  `durasi_detik` int(11) NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `mcID` (`mcID`),
+  KEY `timestamp` (`timestamp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 3. Struktur Tabel `history_downtime`
+CREATE TABLE `history_downtime` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `mcID` varchar(50) NOT NULL,
+  `kode_dt` varchar(20) NOT NULL,
+  `durasi_detik` int(11) NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`),
+  KEY `mcID` (`mcID`),
+  KEY `timestamp` (`timestamp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 4. Struktur Tabel `history_quality`
+CREATE TABLE `history_quality` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `timestamp` datetime NULL DEFAULT current_timestamp(),
+  `mcID` varchar(50) NOT NULL,
+  `kode_katalog` varchar(50) DEFAULT NULL,
+  `op_NIK` varchar(20) DEFAULT NULL,
+  `mcStatus` varchar(20) DEFAULT NULL,
+  `mcInfo` varchar(50) DEFAULT NULL,
+  `prodCount` int(11) DEFAULT 0,
+  `NGCount` int(11) DEFAULT 0,
+  PRIMARY KEY (`id`),
+  KEY `mcID` (`mcID`),
+  KEY `timestamp` (`timestamp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 5. Struktur Tabel `history_summary`
+CREATE TABLE `history_summary` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `tanggal` date NOT NULL,
+  `shift` varchar(50) NOT NULL,
+  `mcID` varchar(50) NOT NULL,
+  `nama_mesin` varchar(100) DEFAULT NULL,
+  `part_name` varchar(100) DEFAULT NULL,
+  `total_ok` int(11) DEFAULT 0,
+  `total_ng` int(11) DEFAULT 0,
+  `oee` float DEFAULT 0,
+  `availability` float DEFAULT 0,
+  `performance` float DEFAULT 0,
+  `quality` float DEFAULT 0,
+  `waktu_mulai` datetime DEFAULT NULL,
+  `waktu_selesai` datetime DEFAULT NULL,
+  `waktu_reset` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 1. Struktur Tabel `log_downtime`
+CREATE TABLE `log_downtime` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `mcID` varchar(50) NOT NULL,
+  `kode_dt` varchar(20) NOT NULL,
+  `durasi_detik` int(11) NOT NULL,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 2. Struktur Tabel `log_ng`
+CREATE TABLE `log_ng` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `timestamp` timestamp NOT NULL DEFAULT current_timestamp(),
+  `mcID` varchar(50) NOT NULL,
+  `kode_ng` varchar(20) NOT NULL,
+  `qty_ng` int(11) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 3. Struktur Tabel `log_quality`
+CREATE TABLE `log_quality` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `timestamp` datetime DEFAULT current_timestamp(),
+  `mcID` varchar(50) NOT NULL,
+  `kode_proses` varchar(50) DEFAULT NULL,
+  `op_NIK` varchar(20) DEFAULT NULL,
+  `mcStatus` varchar(20) DEFAULT NULL,
+  `mcInfo` varchar(50) DEFAULT NULL,
+  `prodCount` int(11) DEFAULT 0,
+  `NGCount` int(11) DEFAULT 0,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 4. Struktur Tabel `master_ct`
+CREATE TABLE `master_ct` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `kode` varchar(20) NOT NULL,
+  `part_name` varchar(100) NOT NULL,
+  `part_number` varchar(50) NOT NULL,
+  `proses_name` varchar(50) NOT NULL,
+  `proses_description` text DEFAULT NULL,
+  `customer` varchar(50) NOT NULL,
+  `line` varchar(50) NOT NULL,
+  `ct_pcs` float NOT NULL,
+  `ct_jam` float NOT NULL,
+  `cavity` int(11) NOT NULL DEFAULT 1,
+  PRIMARY KEY (`id`),
+  KEY `kode_unik` (`kode`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 5. Struktur Tabel `master_defect`
+CREATE TABLE `master_defect` (
+  `kode_defect` varchar(20) NOT NULL,
+  `keterangan` varchar(255) NOT NULL,
+  PRIMARY KEY (`kode_defect`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 1. Struktur Tabel `master_downtime`
+CREATE TABLE `master_downtime` (
+  `kode_dt` varchar(20) NOT NULL,
+  `label_dt` varchar(100) NOT NULL,
+  PRIMARY KEY (`kode_dt`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 2. Struktur Tabel `master_jam_statis`
+CREATE TABLE `master_jam_statis` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nama_template` varchar(100) NOT NULL,
+  `rentang_jam` varchar(50) NOT NULL,
+  `menit_efektif` int(11) NOT NULL,
+  `hari` varchar(20) NOT NULL,
+  `shift` varchar(20) NOT NULL,
+  `urutan` int(11) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 3. Struktur Tabel `master_line`
+CREATE TABLE `master_line` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nama_line` varchar(100) NOT NULL,
+  `nama_template` varchar(100) DEFAULT NULL,
+  `nama_template_shift1` varchar(100) DEFAULT NULL,
+  `nama_template_shift2` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 4. Struktur Tabel `master_mesin`
+CREATE TABLE `master_mesin` (
+  `mcID` varchar(50) NOT NULL,
+  `id_mesin` varchar(50) NOT NULL,
+  `nama_mesin` varchar(100) NOT NULL,
+  PRIMARY KEY (`mcID`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 5. Struktur Tabel `master_operator`
+CREATE TABLE `master_operator` (
+  `nik` varchar(20) NOT NULL,
+  `nama` varchar(100) NOT NULL,
+  `bagian` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`nik`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 1. Struktur Tabel `master_template_jam`
+CREATE TABLE `master_template_jam` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `nama_template` varchar(100) NOT NULL,
+  `deskripsi` varchar(255) DEFAULT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 2. Struktur Tabel `setting_pabrik`
+CREATE TABLE `setting_pabrik` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `jam_reset` time NOT NULL,
+  `jam_reset_shift1` time NOT NULL,
+  `jam_reset_shift2` time NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 3. Struktur Tabel `skill_matrix`
+CREATE TABLE `skill_matrix` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `mcID` varchar(50) NOT NULL,
+  `nik_operator` varchar(20) NOT NULL,
+  `skill_level` tinyint(4) NOT NULL COMMENT '1: Beginner, 2: Basic, 3: Competent, 4: Expert',
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_mc_op` (`mcID`, `nik_operator`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+
+
+
+
+##### Dibawah ini adalah flow json  nodered saya ####
+[
+    {
+        "id": "5f74b6e2bf5bfa2e",
+        "type": "tab",
+        "label": "Flow 1",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "n_mqtt_in",
+        "type": "mqtt in",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "MQTT IN (SMMS/#)",
+        "topic": "SMMS/#",
+        "qos": "0",
+        "datatype": "json",
+        "broker": "b_mqtt_local",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 110,
+        "y": 280,
+        "wires": [
+            [
+                "n_switch_topic"
+            ]
+        ]
+    },
+    {
+        "id": "n_switch_topic",
+        "type": "switch",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Filter Topic",
+        "property": "topic",
+        "propertyType": "msg",
+        "rules": [
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Setup",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Login",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Request/Proses",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/Produksi",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/NG",
+                "vt": "str"
+            },
+            {
+                "t": "eq",
+                "v": "SMMS/Data/Downtime",
+                "vt": "str"
+            }
+        ],
+        "checkall": "true",
+        "repair": false,
+        "outputs": 6,
+        "x": 310,
+        "y": 280,
+        "wires": [
+            [
+                "n_prep_setup"
+            ],
+            [
+                "n_prep_login"
+            ],
+            [
+                "n_prep_proses"
+            ],
+            [
+                "n_prep_log_quality"
+            ],
+            [
+                "n_prep_log_ng"
+            ],
+            [
+                "b25ab6986c8017ad"
+            ]
+        ]
+    },
+    {
+        "id": "n_prep_setup",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Setup",
+        "func": "msg.topic = \"SELECT mcID FROM master_mesin WHERE mcID = ?;\";\nmsg.payload = [msg.payload.mcID];\nreturn msg;",
+        "outputs": 1,
+        "x": 540,
+        "y": 140,
+        "wires": [
+            [
+                "n_db_setup"
+            ]
+        ]
+    },
+    {
+        "id": "n_db_setup",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB master_mesin",
+        "x": 750,
+        "y": 140,
+        "wires": [
+            [
+                "n_rep_setup"
+            ]
+        ]
+    },
+    {
+        "id": "n_rep_setup",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Format Reply Setup",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Setup\";\nif (rows && rows.length > 0) {\n    msg.payload = {\n        status: \"registered\",\n        mcID: rows[0].mcID\n    };\n} else {\n    msg.payload = { status: \"failed\" };\n}\nreturn msg;",
+        "outputs": 1,
+        "x": 970,
+        "y": 140,
+        "wires": [
+            [
+                "n_mqtt_out"
+            ]
+        ]
+    },
+    {
+        "id": "n_prep_login",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Login",
+        "func": "msg.topic = `SELECT o.nama, IFNULL(s.skill_level, 0) as skill_level \nFROM master_operator o \nLEFT JOIN skill_matrix s ON o.nik = s.nik_operator AND s.mcID = ? \nWHERE o.nik = ?;`;\nmsg.payload = [msg.payload.mcID, msg.payload.op_NIK];\nreturn msg;",
+        "outputs": 1,
+        "x": 540,
+        "y": 220,
+        "wires": [
+            [
+                "n_db_login"
+            ]
+        ]
+    },
+    {
+        "id": "n_db_login",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB operator & skill",
+        "x": 750,
+        "y": 220,
+        "wires": [
+            [
+                "n_rep_login"
+            ]
+        ]
+    },
+    {
+        "id": "n_rep_login",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Format Reply Login",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Login\";\n\nif (rows && rows.length > 0) {\n    let skill = rows[0].skill_level;\n    if (skill >= 3) {\n        msg.payload = { status: \"success\", nama: rows[0].nama, level: skill };\n    } else {\n        msg.payload = { status: \"skill_low\" };\n    }\n} else {\n    msg.payload = { status: \"unregistered\" };\n}\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 970,
+        "y": 220,
+        "wires": [
+            [
+                "n_mqtt_out"
+            ]
+        ]
+    },
+    {
+        "id": "n_prep_proses",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Proses",
+        "func": "msg.topic = \"SELECT part_name, part_number, proses_name FROM master_ct WHERE kode = ?;\";\nmsg.payload = [msg.payload.kode_proses];\nreturn msg;",
+        "outputs": 1,
+        "x": 540,
+        "y": 300,
+        "wires": [
+            [
+                "n_db_proses"
+            ]
+        ]
+    },
+    {
+        "id": "n_db_proses",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB master_ct",
+        "x": 750,
+        "y": 300,
+        "wires": [
+            [
+                "n_rep_proses"
+            ]
+        ]
+    },
+    {
+        "id": "n_rep_proses",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Format Reply Proses",
+        "func": "let rows = msg.payload;\nmsg.topic = \"SMMS/Reply/Proses\";\n\nif (rows && rows.length > 0) {\n    msg.payload = {\n        status: \"found\",\n        nama_part: rows[0].part_name,\n        part_no: rows[0].part_number,\n        nama_proses: rows[0].proses_name\n    };\n} else {\n    msg.payload = { status: \"not_found\" };\n}\nreturn msg;",
+        "outputs": 1,
+        "x": 970,
+        "y": 300,
+        "wires": [
+            [
+                "n_mqtt_out"
+            ]
+        ]
+    },
+    {
+        "id": "n_prep_log_quality",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Insert Prod",
+        "func": "let d = msg.payload;\nmsg.topic = `INSERT INTO log_quality \n(mcID, kode_proses, op_NIK, mcStatus, mcInfo, prodCount, NGCount) \nVALUES (?, ?, ?, ?, ?, ?, ?);`;\nmsg.payload = [d.mcID, d.kode_proses, d.op_NIK, d.mcStatus, d.mcInfo, d.prodCount, d.NGCount];\nreturn msg;",
+        "outputs": 1,
+        "x": 360,
+        "y": 460,
+        "wires": [
+            [
+                "n_db_log_quality"
+            ]
+        ]
+    },
+    {
+        "id": "n_db_log_quality",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB log_quality",
+        "x": 580,
+        "y": 460,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "n_prep_log_ng",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Insert NG",
+        "func": "let d = msg.payload;\n// Data ini didapat saat tombol NG+ atau NG- ditekan, qty_ng bisa minus jika itu repair.\nmsg.topic = `INSERT INTO log_ng (mcID, kode_ng, qty_ng) VALUES (?, ?, ?);`;\nmsg.payload = [d.mcID, d.kode_ng, d.qty_ng];\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 300,
+        "y": 520,
+        "wires": [
+            [
+                "n_db_log_ng"
+            ]
+        ]
+    },
+    {
+        "id": "n_db_log_ng",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB log_ng",
+        "x": 550,
+        "y": 520,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "n_mqtt_out",
+        "type": "mqtt out",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "MQTT Reply (Dynamic)",
+        "topic": "",
+        "qos": "0",
+        "retain": "",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "b_mqtt_local",
+        "x": 1260,
+        "y": 220,
+        "wires": []
+    },
+    {
+        "id": "b25ab6986c8017ad",
+        "type": "function",
+        "z": "5f74b6e2bf5bfa2e",
+        "name": "Prep SQL Insert NG",
+        "func": "// Asumsi data yang masuk dari node sebelumnya berada di msg.payload\n// Contoh: msg.payload = { mcID: \"MC-01\", kode_dt: \"DT-05\", durasi_detik: 300 }\n\nlet mcID = msg.payload.mcID || \"\";\nlet kode_dt = msg.payload.kode_dt || \"\";\nlet durasi_detik = msg.payload.durasi_detik || 0;\n\n// Menyiapkan Query SQL menggunakan tanda tanya (?) untuk mencegah SQL Injection\nmsg.topic = \"INSERT INTO log_downtime (mcID, kode_dt, durasi_detik) VALUES (?, ?, ?)\";\n\n// Node MySQL di Node-RED akan membaca array di msg.payload untuk mengisi tanda tanya (?) di atas\nmsg.payload = [mcID, kode_dt, durasi_detik];\n\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 240,
+        "y": 580,
+        "wires": [
+            [
+                "75412c2b2894c2fe"
+            ]
+        ]
+    },
+    {
+        "id": "75412c2b2894c2fe",
+        "type": "mysql",
+        "z": "5f74b6e2bf5bfa2e",
+        "mydb": "db_simulasi",
+        "name": "DB log_downtime",
+        "x": 530,
+        "y": 580,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "b_mqtt_local",
+        "type": "mqtt-broker",
+        "name": "Local MQTT Broker",
+        "broker": "172.237.72.25",
+        "port": "1883",
+        "clientid": "",
+        "usetls": false,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true,
+        "autoUnsubscribe": true
+    },
+    {
+        "id": "db_simulasi",
+        "type": "MySQLdatabase",
+        "name": "DB_Simulasi",
+        "host": "127.0.0.1",
+        "port": "3306",
+        "db": "simulasi",
+        "tz": "",
+        "charset": "UTF8"
+    },
+    {
+        "id": "45b563c66536fbff",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-node-mysql": "3.0.2"
+        }
+    }
+]
+
+##### Dibawah ini adalah code Arduino saya yang lama ####
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Keypad.h>
+#include <ArduinoJson.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <Preferences.h>
+
+// ================= KONFIGURASI JARINGAN & MQTT =================
+const char* ssid = "Wokwi-GUEST";
+const char* password = "";
+const char* mqtt_server = "test.mosquitto.org"; // IP Server MQTT dipindah ke global
+const int mqtt_port = 1883;
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+Preferences preferences; // Untuk simpan ID Mesin permanen
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+
+// ================= KONFIGURASI PIN HARDWARE =================
+#define mcON 34      
+#define mcRun 35     
+#define alarmPin 39  
+#define btnCount 23
+#define ngAdd 32
+#define ngSub 33
+#define btnUp 4      
+#define btnDown 12   
+#define btnDandory 5
+#define btnMinum 15
+
+// Keypad
+const byte ROWS = 4;
+const byte COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'}, 
+  {'7','8','9','C'}, 
+  {'*','0','#','D'}  
+};
+byte rowPins[ROWS] = {19, 18, 17, 16};
+byte colPins[COLS] = {25, 26, 27, 14};
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// ================= STATE MACHINE ENUM =================
+enum SystemState { 
+  BOOT, 
+  SETUP_MODE, WAIT_SETUP_REPLY, 
+  LOGIN_NIK, WAIT_NIK_REPLY, SKILL_CHECK, 
+  INPUT_PROCESS, WAIT_PROCESS_REPLY, CONFIRM_PROCESS, 
+  MAIN_SCREEN, INFO_SCREEN 
+};
+SystemState currentState = BOOT;
+
+// ================= VARIABEL GLOBAL =================
+String mcID = "";
+String op_NIK = "";
+String op_Name = "";
+int op_Level = 0;
+
+String partID = "";
+String partNo = "";
+String prosesDesc = "";
+String kode_proses = "";
+
+String mcStatus = "off";
+String mcInfo = "Mesin Off";
+String previousMcStatus = "off";
+String previousMcInfo = "Stand By";
+
+unsigned int prodCount = 0;
+unsigned int NGCount = 0;
+unsigned int OKCount = 0;
+
+// Buffer & State UI
+String inputBuffer = "";
+unsigned long stateStartTime = 0;
+unsigned long lastMsgTime = 0;
+bool forceUpdate = true;
+String tempMessage = ""; // Untuk pesan sementara (Berhasil/Gagal)
+
+// Variabel Scrolling LCD
+unsigned long previousMillis1 = 0;
+unsigned long previousMillis2 = 0;
+unsigned long previousMillis3 = 0;
+const unsigned long intervalScroll = 1500;
+int posisi1 = 0, posisi2 = 0, posisi3 = 0;
+String lastPartID = "", lastProsesDesc = "", lastmcInfo = "", lastop_NIK = "";
+unsigned int lastOKCount = 9999, lastNGCount = 9999;
+
+// Variabel Tombol & Debounce
+unsigned long ngSubPressTime = 0;
+bool ngSubPressed = false;
+bool lastCountState = HIGH, lastNgAddState = HIGH;
+
+// ================= FUNGSI DEKLARASI =================
+void setup_wifi();
+void reconnect();
+void callback(char* topic, byte* payload, unsigned int length);
+void changeState(SystemState newState);
+void processMainScreen();
+void readMachineStatus();
+void readProductionButtons();
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22); 
+  lcd.init(); lcd.backlight();
+  
+  pinMode(mcON, INPUT); pinMode(mcRun, INPUT); pinMode(alarmPin, INPUT);
+  pinMode(btnCount, INPUT_PULLUP); pinMode(ngAdd, INPUT_PULLUP); pinMode(ngSub, INPUT_PULLUP);
+  pinMode(btnUp, INPUT_PULLUP); pinMode(btnDown, INPUT_PULLUP);
+  pinMode(btnDandory, INPUT_PULLUP); pinMode(btnMinum, INPUT_PULLUP);
+
+  setup_wifi();
+  client.setServer(172.237.72.25, mqtt_port);
+  client.setCallback(callback);
+
+  // Ambil ID Mesin dari memori
+  preferences.begin("smms", false);
+  mcID = preferences.getString("mcID", ""); 
+
+  changeState(BOOT);
+}
+
+// ================= LOOP UTAMA =================
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+  
+  unsigned long currentMillis = millis();
+  char key = keypad.getKey();
+
+  switch (currentState) {
+    case BOOT:
+      if (currentMillis - stateStartTime < 3000) {
+        // Cek hidden setup
+        if (digitalRead(btnUp) == LOW && digitalRead(btnDown) == LOW) {
+          changeState(SETUP_MODE);
+        }
+      } else {
+        if (mcID == "") changeState(SETUP_MODE);
+        else changeState(LOGIN_NIK);
+      }
+      break;
+
+    case SETUP_MODE:
+      if (key >= '0' && key <= '9' || key >= 'A' && key <= 'Z') { inputBuffer += key; forceUpdate = true; }
+      else if (key == 'C' && inputBuffer.length() > 0) { inputBuffer.remove(inputBuffer.length() - 1); forceUpdate = true; }
+      else if (key == 'D' && inputBuffer.length() > 0) {
+        // Kirim request setup
+        StaticJsonDocument<200> doc;
+        doc["mcID"] = inputBuffer;
+        char jsonBuffer[200]; serializeJson(doc, jsonBuffer);
+        client.publish("SMMS/Request/Setup", jsonBuffer);
+        changeState(WAIT_SETUP_REPLY);
+      }
+      if (forceUpdate) {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("Mode Setup Teknisi");
+        lcd.setCursor(0, 1); lcd.print("Masukkan ID Mesin:");
+        lcd.setCursor(0, 2); lcd.print(inputBuffer); lcd.blink();
+        forceUpdate = false;
+      }
+      break;
+
+    case WAIT_SETUP_REPLY:
+    case WAIT_NIK_REPLY:
+    case WAIT_PROCESS_REPLY:
+      if (forceUpdate) {
+        lcd.clear(); lcd.noBlink(); lcd.setCursor(4, 1); lcd.print("Memproses...");
+        forceUpdate = false;
+      }
+      break;
+
+    case LOGIN_NIK:
+      if (key >= '0' && key <= '9' && inputBuffer.length() < 10) { inputBuffer += key; forceUpdate = true; }
+      else if (key == 'C' && inputBuffer.length() > 0) { inputBuffer.remove(inputBuffer.length() - 1); forceUpdate = true; }
+      else if (key == 'D' && inputBuffer.length() > 0) {
+        StaticJsonDocument<200> doc;
+        doc["op_NIK"] = inputBuffer;
+        doc["mcID"] = mcID;
+        char jsonBuffer[200]; serializeJson(doc, jsonBuffer);
+        client.publish("SMMS/Request/Login", jsonBuffer);
+        changeState(WAIT_NIK_REPLY);
+      }
+      if (forceUpdate) {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("PT. CNC - " + mcID);
+        lcd.setCursor(0, 1); lcd.print("Masukkan NIK:");
+        lcd.setCursor(0, 2); lcd.print(inputBuffer); lcd.blink();
+        forceUpdate = false;
+      }
+      break;
+
+    case SKILL_CHECK:
+      // Tampilan transisi sukses/gagal dari callback
+      if (currentMillis - stateStartTime > 3000) {
+        if (op_Level >= 3) changeState(INPUT_PROCESS);
+        else changeState(LOGIN_NIK);
+      } else if (forceUpdate) {
+        lcd.clear(); lcd.noBlink();
+        if (op_Level >= 3) {
+          lcd.setCursor(0, 0); lcd.print("Berhasil!");
+          lcd.setCursor(0, 1); lcd.print(op_Name.substring(0, 20));
+          lcd.setCursor(0, 2); lcd.print("Level: " + String(op_Level) + "/4");
+        } else {
+          lcd.setCursor(0, 0); lcd.print(tempMessage); // Pesan Error
+          lcd.setCursor(0, 2); lcd.print("Tekan D coba lagi");
+        }
+        forceUpdate = false;
+      }
+      if (op_Level < 3 && key == 'D') changeState(LOGIN_NIK);
+      break;
+
+    case INPUT_PROCESS:
+      if (key >= '0' && key <= '9' || key >= 'A' && key <= 'Z') { inputBuffer += key; forceUpdate = true; }
+      else if (key == 'C' && inputBuffer.length() > 0) { inputBuffer.remove(inputBuffer.length() - 1); forceUpdate = true; }
+      else if (key == 'D' && inputBuffer.length() > 0) {
+        StaticJsonDocument<200> doc;
+        doc["kode_proses"] = inputBuffer;
+        char jsonBuffer[200]; serializeJson(doc, jsonBuffer);
+        client.publish("SMMS/Request/Proses", jsonBuffer);
+        changeState(WAIT_PROCESS_REPLY);
+      }
+      if (forceUpdate) {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print("Operator: " + op_NIK);
+        lcd.setCursor(0, 1); lcd.print("Masukkan Kd Proses:");
+        lcd.setCursor(0, 2); lcd.print(inputBuffer); lcd.blink();
+        forceUpdate = false;
+      }
+      break;
+
+    case CONFIRM_PROCESS:
+      if (forceUpdate) {
+        lcd.clear(); lcd.noBlink();
+        lcd.setCursor(0, 0); lcd.print(partID.substring(0, 20));
+        lcd.setCursor(0, 1); lcd.print(partNo.substring(0, 20));
+        lcd.setCursor(0, 2); lcd.print(prosesDesc.substring(0, 20));
+        lcd.setCursor(0, 3); lcd.print("D:Lanjut  C:Batal");
+        forceUpdate = false;
+      }
+      if (key == 'D') changeState(MAIN_SCREEN);
+      else if (key == 'C') changeState(INPUT_PROCESS);
+      break;
+
+    case MAIN_SCREEN:
+      if (forceUpdate) { lcd.clear(); lcd.noBlink(); lastPartID = ""; lastProsesDesc = ""; forceUpdate = false; }
+      
+      // Navigasi Layar Utama
+      if (key == 'A') changeState(LOGIN_NIK);
+      else if (key == 'B') changeState(INPUT_PROCESS);
+      else if (key == '*') changeState(INFO_SCREEN);
+
+      readMachineStatus();
+      readProductionButtons();
+      processMainScreen(); // Update UI LCD (Teks Berjalan dll)
+
+      // Publish Realtime Data tiap 2 Detik
+      if (currentMillis - lastMsgTime > 2000) {
+        lastMsgTime = currentMillis;
+        StaticJsonDocument<512> doc;
+        doc["mcID"] = mcID;
+        doc["op_NIK"] = op_NIK;
+        doc["partID"] = partID;
+        doc["kode_proses"] = kode_proses;
+        doc["mcStatus"] = mcStatus;
+        doc["mcInfo"] = mcInfo;
+        doc["prodCount"] = prodCount;
+        doc["OKCount"] = OKCount;
+        doc["NGCount"] = NGCount;
+        
+        char jsonStr[512]; serializeJson(doc, jsonStr);
+        client.publish("SMMS/Data/Produksi", jsonStr);
+      }
+      break;
+
+    case INFO_SCREEN:
+      if (forceUpdate) {
+        lcd.clear(); lcd.noBlink();
+        lcd.setCursor(0, 0); lcd.print(partID.substring(0, 20));
+        lcd.setCursor(0, 1); lcd.print(partNo.substring(0, 20));
+        lcd.setCursor(0, 2); lcd.print(prosesDesc.substring(0, 20));
+        lcd.setCursor(0, 3); lcd.print("ID Mesin: " + mcID);
+        forceUpdate = false;
+      }
+      if (key == '*') changeState(MAIN_SCREEN); // Kembali ke utama
+      break;
+  }
+}
+
+// ================= CALLBACK MQTT (Terima Data Node-RED) =================
+void callback(char* topic, byte* payload, unsigned int length) {
+  String topicStr = String(topic);
+  StaticJsonDocument<512> doc;
+  deserializeJson(doc, payload, length);
+  String status = doc["status"].as<String>();
+
+  if (topicStr == "SMMS/Reply/Setup" && currentState == WAIT_SETUP_REPLY) {
+    if (status == "registered") {
+      mcID = inputBuffer;
+      preferences.putString("mcID", mcID);
+      lcd.clear(); lcd.print("Berhasil Disimpan!");
+      delay(1500); // Exception delay untuk pesan fix memory
+      changeState(LOGIN_NIK);
+    } else {
+      lcd.clear(); lcd.print("ID Gagal Terdaftar!");
+      delay(1500); changeState(SETUP_MODE);
+    }
+  }
+  
+  else if (topicStr == "SMMS/Reply/Login" && currentState == WAIT_NIK_REPLY) {
+    if (status == "success") {
+      op_NIK = inputBuffer;
+      op_Name = doc["nama"].as<String>();
+      op_Level = doc["level"].as<int>();
+      if (op_Level < 3) tempMessage = "Skill tdk terpenuhi";
+    } else {
+      op_Level = 0; tempMessage = "NIK Tidak Terdaftar";
+    }
+    changeState(SKILL_CHECK);
+  }
+  
+  else if (topicStr == "SMMS/Reply/Proses" && currentState == WAIT_PROCESS_REPLY) {
+    if (status == "found") {
+      kode_proses = inputBuffer;
+      partID = doc["nama_part"].as<String>();
+      partNo = doc["part_no"].as<String>();
+      prosesDesc = doc["nama_proses"].as<String>();
+      
+      // Tambah spasi padding untuk teks berjalan
+      while(partID.length() < 20) partID += " ";
+      while(prosesDesc.length() < 20) prosesDesc += " ";
+      changeState(CONFIRM_PROCESS);
+    } else {
+      lcd.clear(); lcd.print("Kode Tidak Valid!");
+      delay(1500); changeState(INPUT_PROCESS);
+    }
+  }
+}
+
+// ================= MANAJEMEN STATE =================
+void changeState(SystemState newState) {
+  currentState = newState;
+  stateStartTime = millis();
+  inputBuffer = "";
+  forceUpdate = true;
+  lcd.noBlink();
+
+  if (newState == BOOT) {
+    lcd.clear();
+    lcd.setCursor(4, 0); lcd.print("SMART MACHINE");
+    lcd.setCursor(2, 1); lcd.print("MONITORING SYSTEM");
+    lcd.setCursor(7, 3); lcd.print("PT. CNC");
+  } 
+  else if (newState == MAIN_SCREEN) {
+    posisi1 = 0; posisi2 = 0; posisi3 = 0;
+  }
+}
+
+// ================= LOGIKA TOMBOL & COUNTER (TERMASUK RESET 5 DETIK) =================
+void readProductionButtons() {
+  unsigned long currentMillis = millis();
+
+  // Tombol Count
+  bool currentCountState = digitalRead(btnCount);
+  if (lastCountState == HIGH && currentCountState == LOW) { 
+    prodCount++; forceUpdate = true; delay(30); // mini debounce
+  }
+  lastCountState = currentCountState;
+
+  // Tombol NG+
+  bool currentNgAddState = digitalRead(ngAdd);
+  if (lastNgAddState == HIGH && currentNgAddState == LOW && NGCount < prodCount) { 
+    NGCount++; forceUpdate = true; delay(30); 
+  }
+  lastNgAddState = currentNgAddState;
+
+  // Tombol NG- (Pendek = Kurang, Tahan 5D = Reset)
+  int ngSubState = digitalRead(ngSub);
+  if (ngSubState == LOW) { // Tombol sedang ditekan
+    if (!ngSubPressed) {
+      ngSubPressed = true;
+      ngSubPressTime = currentMillis;
+    } else if (currentMillis - ngSubPressTime >= 5000) {
+      // RESET ALL COUNTER JIKA DITAHAN 5 DETIK
+      prodCount = 0; NGCount = 0; OKCount = 0;
+      lcd.clear(); lcd.setCursor(2,1); lcd.print("COUNTER DIRESET!");
+      delay(1500); // Feedback UI
+      forceUpdate = true;
+      ngSubPressTime = currentMillis + 99999; // cegah trigger berulang
+    }
+  } else { // Tombol dilepas
+    if (ngSubPressed) {
+      // Jika dilepas sebelum 5 detik (dan bukan bounce)
+      if (currentMillis - ngSubPressTime < 5000 && currentMillis - ngSubPressTime > 50) {
+        if (NGCount > 0) NGCount--;
+        forceUpdate = true;
+      }
+      ngSubPressed = false;
+    }
+  }
+}
+
+// ================= LOGIKA STATUS MESIN =================
+void readMachineStatus() {
+  if (digitalRead(mcON) == LOW) { 
+    mcStatus = "off"; mcInfo = "Mesin Off"; 
+  } 
+  else if (digitalRead(alarmPin) == HIGH) { 
+    mcStatus = "alarm"; mcInfo = "Mesin Alarm"; 
+  } 
+  else if (digitalRead(mcRun) == HIGH) { 
+    mcStatus = "run"; mcInfo = "Mesin Running"; 
+  } 
+  else {
+    mcStatus = "standBy";
+    if (previousMcStatus != "standBy") previousMcInfo = "Stand By";
+    
+    String currentMcInfo = previousMcInfo;
+    if (digitalRead(btnDandory) == LOW) currentMcInfo = "Dandory";
+    else if (digitalRead(btnMinum) == LOW) currentMcInfo = "Minum";
+    
+    mcInfo = currentMcInfo;
+    previousMcInfo = currentMcInfo;
+  }
+  previousMcStatus = mcStatus;
+}
+
+// ================= FUNGSI LAYAR UTAMA =================
+void processMainScreen() {
+  unsigned long currentMillis = millis();
+  
+  // Update Part ID (Baris 0)
+  if (partID.length() > 20) {
+    if (currentMillis - previousMillis1 >= intervalScroll) {
+      previousMillis1 = currentMillis;
+      lcd.setCursor(0, 0); lcd.print("                    ");
+      lcd.setCursor(0, 0); lcd.print(partID.substring(posisi1, posisi1 + 20));
+      posisi1 += 5;
+      if (posisi1 >= partID.length() - 15) posisi1 = 0;
+    }
+  } else if (partID != lastPartID || forceUpdate) {
+    lcd.setCursor(0, 0); lcd.print("                    ");
+    lcd.setCursor(0, 0); lcd.print(partID);
+    lastPartID = partID;
+  }
+
+  // Update Proses Desc (Baris 1)
+  if (prosesDesc.length() > 20) {
+    if (currentMillis - previousMillis2 >= intervalScroll) {
+      previousMillis2 = currentMillis;
+      lcd.setCursor(0, 1); lcd.print("                    ");
+      lcd.setCursor(0, 1); lcd.print(prosesDesc.substring(posisi2, posisi2 + 20));
+      posisi2 += 5;
+      if (posisi2 >= prosesDesc.length() - 15) posisi2 = 0;
+    }
+  } else if (prosesDesc != lastProsesDesc || forceUpdate) {
+    lcd.setCursor(0, 1); lcd.print("                    ");
+    lcd.setCursor(0, 1); lcd.print(prosesDesc);
+    lastProsesDesc = prosesDesc;
+  }
+
+  // Update Mc Info (Baris 2)
+  String displayInfo = mcInfo;
+  while(displayInfo.length() < 20) displayInfo += " "; // padding
+  if (displayInfo.length() > 20) {
+    if (currentMillis - previousMillis3 >= intervalScroll) {
+      previousMillis3 = currentMillis;
+      lcd.setCursor(0, 2); lcd.print("                    ");
+      lcd.setCursor(0, 2); lcd.print(displayInfo.substring(posisi3, posisi3 + 20));
+      posisi3 += 5;
+      if (posisi3 >= displayInfo.length() - 15) posisi3 = 0;
+    }
+  } else if (displayInfo != lastmcInfo || forceUpdate) {
+    lcd.setCursor(0, 2); lcd.print("                    ");
+    lcd.setCursor(0, 2); lcd.print(displayInfo);
+    lastmcInfo = displayInfo;
+  }
+
+  // Update Baris Bawah (Baris 3) - NIK & Counter
+  if (op_NIK != lastop_NIK || forceUpdate) {
+    lcd.setCursor(0, 3); lcd.print("         ");
+    lcd.setCursor(0, 3); lcd.print(op_NIK);
+    lastop_NIK = op_NIK;
+  }
+
+  OKCount = prodCount - NGCount;
+  if (OKCount != lastOKCount || forceUpdate) {
+    lcd.setCursor(9, 3); lcd.print("|      ");
+    lcd.setCursor(11, 3); lcd.print(OKCount);
+    lastOKCount = OKCount;
+  }
+
+  if (NGCount != lastNGCount || forceUpdate) {
+    lcd.setCursor(16, 3); lcd.print("/   ");
+    lcd.setCursor(17, 3); lcd.print(NGCount);
+    lastNGCount = NGCount;
+  }
+}
+
+// ================= SETUP WIFI & MQTT =================
+void setup_wifi() {
+  lcd.setCursor(0, 0); lcd.print("Koneksi WiFi...     ");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  lcd.setCursor(0, 0); lcd.print("WiFi Terhubung!     ");
+  delay(1000);
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    String clientId = "ESP32_Mesin_" + String(random(0xffff), HEX);
+    client.setBufferSize(1024);
+    
+    // Subscribe ke semua topik Reply Node-RED saat berhasil konek
+    if (client.connect(clientId.c_str())) {
+      client.subscribe("SMMS/Reply/Setup");
+      client.subscribe("SMMS/Reply/Login");
+      client.subscribe("SMMS/Reply/Proses");
+    } else { 
+      delay(5000); 
+    }
+  }
+}
