@@ -180,8 +180,8 @@ if (isset($_GET['edit_slot'])) {
         .header-left { display: flex; align-items: center; gap: 15px; }
         .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; }
         .header h1 { margin: 0; font-size: 22px; color: #fff; }
-        .btn-back { background: #334155; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: bold; transition: 0.2s; }
-        .btn-back:hover { background: #475569; }
+        .btn-back { background: #334155; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: bold; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); display: inline-flex; align-items: center; gap: 6px; }
+        .btn-back:hover { background: #475569; transform: translateX(-2px); }
 
         .layout-grid {
             display: grid; grid-template-columns: 340px 1fr; gap: 25px; align-items: start;
@@ -268,11 +268,21 @@ if (isset($_GET['edit_slot'])) {
             <a href="<?= BASE_URL ?>user/index.php">📊 Dashboard Utama</a>
             <a href="<?= BASE_URL ?>user/history/index.php">📁 History Produksi</a>
             <a href="<?= BASE_URL ?>user/summary_oee.php">📈 Rangkuman OEE</a>
-            <?php if(isset($user_role) && $user_role === 'it'): ?><a href="<?= BASE_URL ?>setting/pengaturan_jam.php" class="active">⏱️ Master Jam (Template)</a>
-            <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line & Reset</a>
-            <a href="<?= BASE_URL ?>admin/skill_matrix.php">🎯 Skill Matrix Mesin</a>
-            <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
+            <?php if(isset($user_role) && $user_role === 'it'): ?>
+                <a href="<?= BASE_URL ?>setting/pengaturan_jam.php" class="active">⏱️ Master Jam (Template)</a>
+                <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
+                <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
+            <?php endif; ?>
+            <?php if(isset($user_role) && in_array($user_role, ['admin', 'it'])): ?>
+                <a href="<?= BASE_URL ?>admin/skill_matrix.php">🎯 Skill Matrix Mesin</a>
+                <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
                 <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
             <?php endif; ?>
         </div>
     </div>
@@ -283,7 +293,7 @@ if (isset($_GET['edit_slot'])) {
             <button class="menu-btn" onclick="toggleSidebar()">&#9776;</button>
             <h1>⏱️ DETAIL TEMPLATE: <span style="color:var(--primary);"><?= htmlspecialchars($template_name) ?></span></h1>
         </div>
-        <a href="<?= BASE_URL ?>setting/pengaturan_jam.php" class="btn-back">&larr; Kembali ke Daftar Template</a>
+        <a href="<?= BASE_URL ?>setting/pengaturan_jam.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">&larr; Kembali ke Daftar Template</a>
     </div>
 
     <?= $pesan ?>

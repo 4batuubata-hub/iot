@@ -22,6 +22,36 @@ if ($data) {
     $mcStatus_esc = $conn->real_escape_string($mcStatus);
     $mcInfo_esc = $conn->real_escape_string($mcInfo);
     
+    // ======== GAP DETECTION (Anti-Spike Setelah Server Offline) ========
+    // Jika server pernah mati lama (>30 menit tanpa data), Arduino tetap counting.
+    // Saat reconnect, prodCount sudah membengkak. Solusi: set offset_produksi = prodCount
+    // agar chart dimulai dari 0, bukan menumpuk counter lama di jam pertama.
+    $GAP_THRESHOLD_MINUTES = 30; // Threshold jeda waktu (menit)
+    
+    $res_gap = $conn->query("SELECT timestamp, prodCount FROM log_quality WHERE mcID = '$mcID_esc' ORDER BY id DESC LIMIT 1");
+    if ($res_gap && $res_gap->num_rows > 0) {
+        $last_row = $res_gap->fetch_assoc();
+        $last_timestamp = strtotime($last_row['timestamp']);
+        $current_time = time();
+        $gap_minutes = ($current_time - $last_timestamp) / 60;
+        
+        if ($gap_minutes >= $GAP_THRESHOLD_MINUTES) {
+            // GAP TERDETEKSI: Server kemungkinan offline lama
+            $conn->query("INSERT INTO debug_log (msg) VALUES ('[GAP DETECT] mcID=$mcID_esc, gap={$gap_minutes}m, old_prod={$last_row['prodCount']}, new_prod=$prodCount. Setting offset=$prodCount')");
+            
+            // Set offset_produksi ke prodCount saat ini agar chart mulai dari 0
+            $conn->query("UPDATE master_mesin SET offset_produksi = '$prodCount' WHERE id_mesin = '$mcID_esc' OR mcID = '$mcID_esc'");
+        }
+    } else {
+        // ENTRY PERTAMA untuk mesin ini (belum ada data di log_quality)
+        // Jika prodCount sudah tinggi (>100), berarti Arduino sudah counting saat server mati.
+        // Set offset agar chart tidak langsung menunjukan angka besar.
+        if ($prodCount > 100) {
+            $conn->query("INSERT INTO debug_log (msg) VALUES ('[FIRST ENTRY] mcID=$mcID_esc, prodCount=$prodCount sudah tinggi. Setting offset=$prodCount')");
+            $conn->query("UPDATE master_mesin SET offset_produksi = '$prodCount' WHERE id_mesin = '$mcID_esc' OR mcID = '$mcID_esc'");
+        }
+    }
+    
     // ======== DOWNTIME TRACKING LOGIC ========
     $res_last = $conn->query("SELECT mcInfo FROM log_quality WHERE mcID = '$mcID_esc' ORDER BY id DESC LIMIT 1");
     if ($res_last && $res_last->num_rows > 0) {

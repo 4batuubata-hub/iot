@@ -8,6 +8,7 @@ $conn = new mysqli($host, $user, $pass, $db);
 if ($conn->connect_error) die("Koneksi Gagal: " . $conn->connect_error);
 
 $conn->query("SET time_zone = '+07:00'");
+require_once __DIR__ . '/../../helper_jadwal.php';
 $current_timestamp = time();
 
 function getLogicalDay($timestamp = null) {
@@ -183,29 +184,39 @@ try {
             $waktu_selesai = $conn->query("SELECT MAX(timestamp) as max_ts FROM log_quality WHERE mcID = '$mcID' AND id <= $max_q AND timestamp <= '$batas_waktu_str'")->fetch_assoc()['max_ts'] ?? $batas_waktu_str;
             
             $ng = $conn->query("SELECT COALESCE(SUM(qty_ng), 0) as qty FROM log_ng WHERE mcID = '$mcID' AND id <= $max_ng AND timestamp <= '$batas_waktu_str'")->fetch_assoc()['qty'] ?? 0;
-            $total_dt_r = $conn->query("SELECT COALESCE(SUM(durasi_detik), 0) as total_dt FROM history_downtime WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$batas_waktu_str'")->fetch_assoc()['total_dt'] ?? 0;
             
-            $operating_time_seconds = $ppt_seconds - $total_dt_r;
-            if ($operating_time_seconds < 0) $operating_time_seconds = 0;
+            // Hitung total loss downtime dengan time clipping terhadap jendela shift
+            $res_dt_logs = $conn->query("SELECT kode_dt, durasi_detik, timestamp FROM history_downtime WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$batas_waktu_str'");
+            $total_loss_sec = 0;
+            if ($res_dt_logs && $res_dt_logs->num_rows > 0) {
+                $shift_start_ts = strtotime($waktu_mulai);
+                $shift_end_ts = strtotime($batas_waktu_str);
+                while ($dt_row = $res_dt_logs->fetch_assoc()) {
+                    $end_ts = strtotime($dt_row['timestamp']);
+                    $start_ts = $end_ts - (int)$dt_row['durasi_detik'];
+                    $clipped = clipIntervalToShift($start_ts, $end_ts, $shift_start_ts, $shift_end_ts);
+                    $total_loss_sec += $clipped;
+                }
+            }
             
-            $a = ($ppt_seconds > 0) ? ($operating_time_seconds / $ppt_seconds) * 100 : 0;
-            $p = ($operating_time_seconds > 0) ? (($ideal_ct * $prod) / $operating_time_seconds) * 100 : 0;
-            $q = ($prod > 0) ? (($prod - $ng) / $prod) * 100 : 0;
-            
-            if ($a > 100) $a = 100;
-            if ($p > 100) $p = 100;
-            if ($q > 100) $q = 100;
-            if ($q < 0) $q = 0;
-            $oee = ($a * $p * $q) / 10000;
+            // Formula OEE Standar Internasional ISO 22400-2
+            $std_oee = calculateStandardOEE($ppt_seconds, $total_loss_sec, $prod, $ng, $ideal_ct);
+            $a = $std_oee['availability'];
+            $p = $std_oee['performance'];
+            $q = $std_oee['quality'];
+            $oee = $std_oee['oee'];
 
-            $conn->query("INSERT IGNORE INTO history_summary (tanggal, shift, mcID, nama_mesin, part_name, total_ok, total_ng, oee, availability, performance, quality, waktu_mulai, waktu_selesai, waktu_reset) 
-                          VALUES ('$tanggal_history', 'REKAP HARIAN', '$mcID', '$nama_mesin', '$part_name', '$prod', '$ng', '$oee', '$a', '$p', '$q', '$waktu_mulai', '$waktu_selesai', NOW())");
+            $conn->query("INSERT INTO history_summary (tanggal, shift, mcID, nama_mesin, part_name, total_ok, total_ng, oee, availability, performance, quality, waktu_mulai, waktu_selesai, waktu_reset) 
+                          VALUES ('$tanggal_history', '$shift_label', '$mcID', '$nama_mesin', '$part_name', '$prod', '$ng', '$oee', '$a', '$p', '$q', '$waktu_mulai', '$waktu_selesai', NOW())
+                          ON DUPLICATE KEY UPDATE 
+                          nama_mesin = VALUES(nama_mesin), part_name = VALUES(part_name), total_ok = VALUES(total_ok), total_ng = VALUES(total_ng),
+                          oee = VALUES(oee), availability = VALUES(availability), performance = VALUES(performance), quality = VALUES(quality),
+                          waktu_mulai = VALUES(waktu_mulai), waktu_selesai = VALUES(waktu_selesai), waktu_reset = NOW()");
             
-            // Solusi Zombie Data ESP32: Simpan prodCount terakhir sebagai offset untuk shift berikutnya
-            $last_row = $conn->query("SELECT prodCount, raw_prodCount FROM log_quality WHERE mcID = '$mcID' ORDER BY id DESC LIMIT 1")->fetch_assoc();
-            $last_prod = $last_row['prodCount'] ?? 0;
+            // Simpan prodCount terakhir sebagai offset raw untuk shift berikutnya
+            $last_row = $conn->query("SELECT prodCount, raw_prodCount FROM log_quality WHERE mcID = '$mcID' AND id <= $max_q ORDER BY id DESC LIMIT 1")->fetch_assoc();
             $last_raw = $last_row['raw_prodCount'] ?? 0;
-            $conn->query("UPDATE master_mesin SET catStatus = 'OFF SHIFT', offset_produksi = '$last_prod', offset_raw_produksi = '$last_raw' WHERE mcID = '$mcID' OR id_mesin = '$mcID'");
+            $conn->query("UPDATE master_mesin SET catStatus = 'OFF SHIFT', offset_produksi = '0', offset_raw_produksi = '$last_raw' WHERE mcID = '$mcID' OR id_mesin = '$mcID'");
         }
     }
 

@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../../auth_check.php';
+require_once __DIR__ . '/../../helper_jadwal.php';
 date_default_timezone_set('Asia/Jakarta');
 
 $host = "localhost"; $user = "root"; $pass = ""; $db = "simulasi";
@@ -14,8 +15,24 @@ $tanggal = isset($_GET['tanggal']) ? $conn->real_escape_string($_GET['tanggal'])
 $filterShift = isset($_GET['shift']) ? $conn->real_escape_string($_GET['shift']) : '';
 if(empty($mcID) || empty($tanggal)) die("<h2 style='color:white; text-align:center;'>Data History tidak valid!</h2>");
 
+// Resolve machine identifier: dukung format numerik (misal 3196) dan string (misal '2 WS35 - 020')
+$sql_map = "SELECT mcID, id_mesin, nama_mesin FROM master_mesin WHERE mcID = '$mcID' OR id_mesin = '$mcID' LIMIT 1";
+$res_map = $conn->query($sql_map);
+$machine_row = ($res_map && $res_map->num_rows > 0) ? $res_map->fetch_assoc() : null;
+
+$arr_ids = [$mcID];
+if ($machine_row) {
+    if (!empty($machine_row['mcID'])) $arr_ids[] = $machine_row['mcID'];
+    if (!empty($machine_row['id_mesin'])) $arr_ids[] = $machine_row['id_mesin'];
+}
+$arr_ids = array_unique(array_filter($arr_ids));
+$in_mcID = "'" . implode("','", array_map([$conn, 'real_escape_string'], $arr_ids)) . "'";
+
 // 1. Ambil info dari summary history (dengan filter shift jika ada)
-$sql_summary = "SELECT hs.*, mm.nama_mesin, mm.mcID as string_mcID FROM history_summary hs LEFT JOIN master_mesin mm ON (hs.mcID = mm.id_mesin OR hs.mcID = mm.mcID) WHERE hs.mcID = '$mcID' AND hs.tanggal = '$tanggal'";
+$sql_summary = "SELECT hs.*, mm.nama_mesin, mm.mcID as num_mcID, mm.id_mesin as str_mcID 
+                FROM history_summary hs 
+                LEFT JOIN master_mesin mm ON (hs.mcID = mm.id_mesin OR hs.mcID = mm.mcID) 
+                WHERE hs.mcID IN ($in_mcID) AND hs.tanggal = '$tanggal'";
 if (!empty($filterShift)) { $sql_summary .= " AND hs.shift = '$filterShift'"; }
 $sql_summary .= " LIMIT 1";
 $res_summary = $conn->query($sql_summary);
@@ -23,34 +40,54 @@ $summary = ($res_summary && $res_summary->num_rows > 0) ? $res_summary->fetch_as
 
 if (empty($summary)) die("<h2 style='color:white; text-align:center;'>Data History tidak ditemukan untuk mesin ini.</h2>");
 
+// Ambil jam shift standar dari setting_pabrik
+$sql_sp = $conn->query("SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1");
+$sp = ($sql_sp && $sql_sp->num_rows > 0) ? $sql_sp->fetch_assoc() : [];
+$jam_reset_s1 = !empty($sp['jam_reset_shift1']) ? $sp['jam_reset_shift1'] : '18:00:00';
+$jam_reset_s2 = !empty($sp['jam_reset_shift2']) ? $sp['jam_reset_shift2'] : '06:00:00';
+
 // 2. Ambil detail operasional terakhir dari history (Part, CT, Proses, Operator)
 $filter_waktu_hq = "";
 $filter_waktu_hn = "";
 $filter_waktu_hd = "";
 
 if (empty($filterShift) || $filterShift == 'REKAP HARIAN' || $filterShift == 'ALL') {
-    $filter_waktu_hq = "DATE(hq.timestamp) = '$tanggal'";
-    $filter_waktu_hn = "DATE(hn.timestamp) = '$tanggal'";
-    $filter_waktu_hd = "DATE(hd.timestamp) = '$tanggal'";
+    $tgl_next = date('Y-m-d', strtotime("$tanggal +1 day"));
+    $s_start = "$tanggal $jam_reset_s2";
+    $s_end = !empty($summary['waktu_selesai']) ? max($summary['waktu_selesai'], "$tgl_next $jam_reset_s2") : "$tgl_next $jam_reset_s2";
+    $filter_waktu_hq = "hq.timestamp >= '$s_start' AND hq.timestamp <= '$s_end'";
+    $filter_waktu_hn = "hn.timestamp >= '$s_start' AND hn.timestamp <= '$s_end'";
+    $filter_waktu_hd = "hd.timestamp >= '$s_start' AND hd.timestamp <= '$s_end'";
+} elseif ($filterShift == 'SHIFT 1') {
+    $s_start = !empty($summary['waktu_mulai']) ? min($summary['waktu_mulai'], "$tanggal $jam_reset_s2") : "$tanggal $jam_reset_s2";
+    $s_end = !empty($summary['waktu_selesai']) ? max($summary['waktu_selesai'], "$tanggal $jam_reset_s1") : "$tanggal $jam_reset_s1";
+    $filter_waktu_hq = "hq.timestamp >= '$s_start' AND hq.timestamp <= '$s_end'";
+    $filter_waktu_hn = "hn.timestamp >= '$s_start' AND hn.timestamp <= '$s_end'";
+    $filter_waktu_hd = "hd.timestamp >= '$s_start' AND hd.timestamp <= '$s_end'";
 } else {
-    $waktu_mulai = $summary['waktu_mulai'] ?? ($tanggal . ' 00:00:00');
-    $waktu_selesai = $summary['waktu_selesai'] ?? ($tanggal . ' 23:59:59');
-    $filter_waktu_hq = "hq.timestamp >= '$waktu_mulai' AND hq.timestamp <= '$waktu_selesai'";
-    $filter_waktu_hn = "hn.timestamp >= '$waktu_mulai' AND hn.timestamp <= '$waktu_selesai'";
-    $filter_waktu_hd = "hd.timestamp >= '$waktu_mulai' AND hd.timestamp <= '$waktu_selesai'";
+    // SHIFT 2 (Lintas Malam)
+    $tgl_next = date('Y-m-d', strtotime("$tanggal +1 day"));
+    $s_start = !empty($summary['waktu_mulai']) ? min($summary['waktu_mulai'], "$tanggal $jam_reset_s1") : "$tanggal $jam_reset_s1";
+    $s_end = !empty($summary['waktu_selesai']) ? max($summary['waktu_selesai'], "$tgl_next $jam_reset_s2") : "$tgl_next $jam_reset_s2";
+    $filter_waktu_hq = "hq.timestamp >= '$s_start' AND hq.timestamp <= '$s_end'";
+    $filter_waktu_hn = "hn.timestamp >= '$s_start' AND hn.timestamp <= '$s_end'";
+    $filter_waktu_hd = "hd.timestamp >= '$s_start' AND hd.timestamp <= '$s_end'";
 }
+
+$waktu_mulai = !empty($summary['waktu_mulai']) ? $summary['waktu_mulai'] : $s_start;
+$waktu_selesai = !empty($summary['waktu_selesai']) ? $summary['waktu_selesai'] : $s_end;
 
 $sql_last_log = "SELECT hq.*, mc.part_name, mc.part_number, mc.proses_name, mc.ct_pcs, mc.ct_jam, mc.line, mo.nama as nama_operator, mo.nik
                  FROM history_quality hq
                  LEFT JOIN master_ct mc ON hq.kode_proses = mc.kode
                  LEFT JOIN master_operator mo ON hq.op_NIK = mo.nik
-                 WHERE hq.mcID = '$mcID' AND $filter_waktu_hq
+                 WHERE hq.mcID IN ($in_mcID) AND $filter_waktu_hq
                  ORDER BY hq.id DESC LIMIT 1";
 
 $res_last_log = $conn->query($sql_last_log);
 $last_log = ($res_last_log && $res_last_log->num_rows > 0) ? $res_last_log->fetch_assoc() : [];
 
-$namaMesin = $summary['nama_mesin'] ?? $mcID; 
+$namaMesin = $machine_row['nama_mesin'] ?? ($summary['nama_mesin'] ?? $mcID); 
 $partName = $last_log['part_name'] ?? ($summary['part_name'] ?? 'Data Part Terhapus');
 $partNumber = $last_log['part_number'] ?? '-';
 $prosesName = $last_log['proses_name'] ?? 'PROSES 1'; 
@@ -59,15 +96,29 @@ $targetPerJam = isset($last_log['ct_jam']) && $last_log['ct_jam'] > 0 ? round($l
 $operatorName = $last_log['nama_operator'] ?? ($last_log['op_NIK'] ?? 'Belum Login'); 
 $nikOP = $last_log['nik'] ?? ($last_log['op_NIK'] ?? 'default');
 $shift_aktif = $summary['shift'] ?? 'REKAP HARIAN';
-$lineMesin = $last_log['line'] ?? 'N/A';
-$stringMcID = $summary['string_mcID'] ?? $mcID;
+$lineMesin = $last_log['line'] ?? ($summary['line'] ?? 'N/A');
+$stringMcID = $machine_row['id_mesin'] ?? ($summary['str_mcID'] ?? ($summary['string_mcID'] ?? $mcID));
+
+// Failsafe CT & Part Target jika di log kosong atau part_name diambil dari summary
+if (($ctPcs <= 0 || $targetPerJam <= 0) && !empty($partName) && $partName !== 'Data Part Terhapus') {
+    $pnEsc = $conn->real_escape_string($partName);
+    $res_ct = $conn->query("SELECT ct_pcs, ct_jam, part_number, proses_name, line FROM master_ct WHERE part_name = '$pnEsc' ORDER BY id DESC LIMIT 1");
+    if ($res_ct && $res_ct->num_rows > 0) {
+        $row_ct = $res_ct->fetch_assoc();
+        if ($ctPcs <= 0) $ctPcs = (float)($row_ct['ct_pcs'] ?? 0);
+        if ($targetPerJam <= 0) $targetPerJam = isset($row_ct['ct_jam']) && $row_ct['ct_jam'] > 0 ? round($row_ct['ct_jam']) : 0;
+        if ($partNumber === '-' && !empty($row_ct['part_number'])) $partNumber = $row_ct['part_number'];
+        if ($prosesName === 'PROSES 1' && !empty($row_ct['proses_name'])) $prosesName = $row_ct['proses_name'];
+        if ($lineMesin === 'N/A' && !empty($row_ct['line'])) $lineMesin = $row_ct['line'];
+    }
+}
 
 // AMBIL SKILL MATRIX OPERATOR DARI DATABASE
 $opSkillLevel = 1;
 $opFoto = '';
-$target_mcID = $summary['string_mcID'] ?? $mcID;
+$target_mcID = $stringMcID;
 if (!empty($nikOP) && $nikOP !== 'default') {
-    $sql_sm = "SELECT skill_level FROM skill_matrix WHERE mcID = '$target_mcID' AND nik_operator = '$nikOP' LIMIT 1";
+    $sql_sm = "SELECT skill_level FROM skill_matrix WHERE mcID IN ($in_mcID) AND nik_operator = '$nikOP' LIMIT 1";
     $res_sm = $conn->query($sql_sm);
     if (!$res_sm || $res_sm->num_rows == 0) {
         $sql_sm = "SELECT skill_level FROM skill_matrix WHERE nik_operator = '$nikOP' ORDER BY skill_level DESC LIMIT 1";
@@ -96,14 +147,40 @@ $statusTeks = "ARSIP " . date('d M Y', strtotime($tanggal));
 $statusWarna = "#1e3a8a"; // Warna Biru Penanda History
 
 $totalOK = $summary['total_ok'] ?? 0;
-$totalNG = $summary['total_ng'] ?? 0;
-$totalRepair = 0; 
-$totalScrap = $totalNG - $totalRepair;
+
+// Kalkulasi Dinamis NG & Repair dari history_ng
+$res_ng_totals = $conn->query("SELECT 
+    COALESCE(SUM(CASE WHEN qty_ng > 0 THEN qty_ng ELSE 0 END), 0) as total_ng_plus,
+    COALESCE(SUM(CASE WHEN qty_ng < 0 THEN ABS(qty_ng) ELSE 0 END), 0) as total_repair
+    FROM history_ng hn WHERE hn.mcID IN ($in_mcID) AND $filter_waktu_hn");
+$ng_totals_row = ($res_ng_totals && $res_ng_totals->num_rows > 0) ? $res_ng_totals->fetch_assoc() : [];
+
+$totalNG_plus = (int)($ng_totals_row['total_ng_plus'] ?? 0);
+$totalRepair = (int)($ng_totals_row['total_repair'] ?? 0);
+
+if ($totalNG_plus > 0 || $totalRepair > 0) {
+    $totalNG = $totalNG_plus;
+    $totalScrap = max(0, $totalNG - $totalRepair);
+} else {
+    $totalNG = (int)($summary['total_ng'] ?? 0);
+    $totalScrap = $totalNG;
+}
 
 // Safe query for losstime - WILL BE OVERWRITTEN LATER BY PROPORTIONAL CALCULATION
 $totalLosstimeMenit = 0;
 
-$res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, COALESCE(SUM(hn.qty_ng), 0) as qty FROM history_ng hn LEFT JOIN master_defect md ON hn.kode_ng = md.kode_defect WHERE hn.mcID = '$mcID' AND $filter_waktu_hn GROUP BY hn.kode_ng, md.keterangan");
+$res_ng_summary = $conn->query("SELECT 
+    md.keterangan as nama_defect, 
+    mc.part_name as log_part_name, 
+    mc.part_number as log_part_number, 
+    COALESCE(SUM(CASE WHEN hn.qty_ng > 0 THEN hn.qty_ng ELSE 0 END), 0) as qty_ng_plus, 
+    COALESCE(SUM(CASE WHEN hn.qty_ng < 0 THEN ABS(hn.qty_ng) ELSE 0 END), 0) as qty_repair, 
+    COALESCE(SUM(hn.qty_ng), 0) as net_scrap 
+    FROM history_ng hn 
+    LEFT JOIN master_defect md ON hn.kode_ng = md.kode_defect 
+    LEFT JOIN master_ct mc ON hn.kode_proses = mc.kode 
+    WHERE hn.mcID IN ($in_mcID) AND $filter_waktu_hn 
+    GROUP BY hn.kode_proses, hn.kode_ng, md.keterangan, mc.part_name, mc.part_number");
 // Operator Names mapping for dynamic history
 $op_names = [];
 $res_op = $conn->query("SELECT nik, nama FROM master_operator");
@@ -183,7 +260,7 @@ if (!function_exists('isTimeInRange')) {
 $sql_logs = "SELECT hq.timestamp, hq.prodCount, hq.op_NIK, c.part_name, c.part_number, c.proses_name, c.ct_pcs, c.ct_jam 
              FROM history_quality hq 
              LEFT JOIN master_ct c ON hq.kode_proses = c.kode 
-             WHERE hq.mcID = '$mcID' AND $filter_waktu_hq 
+             WHERE hq.mcID IN ($in_mcID) AND $filter_waktu_hq 
              ORDER BY hq.timestamp ASC, hq.id ASC";
 // echo "<div style='background:#111; padding:10px; margin:10px; border:1px solid #0f0; color:cyan;'><b>DEBUG sql_logs (Dekidaka RAW DATA):</b><br>" . $sql_logs . "</div>";
 $res_logs = $conn->query($sql_logs);
@@ -379,108 +456,177 @@ foreach($tableData as $pn => &$partData) {
     }
 }
 
-// Bersihkan kolom jam yang seharian kosong
-foreach($hourlyActualSum as $k => $v) { 
-    $hasData = false;
-    if (!empty($tableData)) {
-        foreach($tableData as $pn => $partData) {
-            foreach($partData['proses'] as $pName => $pData) {
-                if(isset($pData['data_jam'][$k]) && $pData['data_jam'][$k] !== 'NO DATA') {
-                    $hasData = true; break 2;
-                }
-            }
-        }
-    }
-    if($v == 0 && !$hasData) { 
-        unset($hourlyActualSum[$k]); 
-        unset($hourlyTargetSum[$k]); 
-    } 
-}
-$jamAktifFinal = array_keys($hourlyActualSum);
-
-// Hitung jumlah kolom untuk DataTables (KRITIS: harus konsisten antara thead dan tbody)
-$totalColumns = count($jamAktifFinal) + 4; // Part Name + Part Number + Proses (CT) + [jam columns] + Total
-
-$res_pareto = $conn->query("SELECT CASE WHEN hd.kode_dt = 'SB' THEN 'Stand By' WHEN hd.kode_dt = 'Mesin Off' THEN 'Mesin Off' ELSE COALESCE(md.label_dt, hd.kode_dt) END as label_downtime, SUM(hd.durasi_detik) as total_detik FROM history_downtime hd LEFT JOIN master_downtime md ON hd.kode_dt = md.kode_dt WHERE hd.mcID = '$mcID' AND $filter_waktu_hd GROUP BY label_downtime ORDER BY total_detik DESC");
-$paretoLabels = []; $paretoValues = [];
-
-// --- PROPORTIONAL SMART BREAK ---
-$forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
-$historical_real_dt = 0;
-$historical_whitelist_dt = 0;
-$whitelist_pareto_map = [];
-$pareto_map = [];
-
-if ($res_pareto && $res_pareto->num_rows > 0) { 
-    while($pRow = $res_pareto->fetch_assoc()) { 
-        $lbl = $pRow['label_downtime'];
-        $dur = (int)$pRow['total_detik'];
-        if (in_array($lbl, $forgiven_labels)) {
-            $historical_whitelist_dt += $dur;
-            $whitelist_pareto_map[$lbl] = $dur;
-        } else {
-            $historical_real_dt += $dur;
-            $pareto_map[$lbl] = $dur;
-        }
-    } 
-}
-
-// Hitung PPT Seconds
-$ppt_seconds = 0;
-$current_ts = strtotime($waktu_selesai);
+// Bersihkan kolom jam yang seharian kosong HANYA jika mode REKAP HARIAN / 24 Jam
 if ($shift_aktif == 'REKAP HARIAN' || $shift_aktif == 'ALL') {
-    $ppt_seconds = 24 * 3600;
-} else {
-    foreach($jamAktif as $jam) {
-        $eff_min = $jamEfektif[$jam] ?? 0;
-        if ($eff_min > 0) {
-            $p = explode('-', $jam);
-            if(count($p) == 2) {
-                $s_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[0]) . ':00');
-                $e_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[1]) . ':00');
-                if ($e_time < $s_time) $e_time += 86400;
-                if ($s_time < strtotime($waktu_mulai)) { $s_time += 86400; $e_time += 86400; }
-                
-                $slot_dur = $e_time - $s_time;
-                if ($current_ts > $s_time) {
-                    $elapsed = min($current_ts, $e_time) - $s_time;
-                    if ($slot_dur > 0) {
-                        $ppt_seconds += ($elapsed / $slot_dur) * ($eff_min * 60);
+    foreach($hourlyActualSum as $k => $v) { 
+        $hasData = false;
+        if (!empty($tableData)) {
+            foreach($tableData as $pn => $partData) {
+                foreach($partData['proses'] as $pName => $pData) {
+                    if(isset($pData['data_jam'][$k]) && $pData['data_jam'][$k] !== 'NO DATA') {
+                        $hasData = true; break 2;
                     }
                 }
             }
         }
+        if($v == 0 && !$hasData) { 
+            unset($hourlyActualSum[$k]); 
+            unset($hourlyTargetSum[$k]); 
+        } 
+    }
+}
+$jamAktifFinal = !empty($hourlyActualSum) ? array_keys($hourlyActualSum) : $jamAktif;
+
+// Fallback Dekidaka: Jika tableData kosong tapi totalOK > 0 tercatat di history_summary
+if (empty($tableData) && $totalOK > 0) {
+    $pn_fb = ($partNumber !== '-') ? $partNumber : 'PRD-' . date('ymd', strtotime($tanggal));
+    $name_fb = !empty($partName) ? $partName : 'Part Terdaftar';
+    $proses_fb = !empty($prosesName) ? $prosesName : 'PROSES 1';
+    
+    if (empty($jamAktifFinal)) {
+        $jamAktifFinal = !empty($jamAktif) ? $jamAktif : ['07:00 - 15:00'];
+    }
+    
+    $tableData[$pn_fb] = [
+        'name' => $name_fb,
+        'proses' => [
+            $proses_fb => [
+                'ct' => $ctPcs,
+                'data_jam' => []
+            ]
+        ]
+    ];
+    
+    $slotCount = count($jamAktifFinal);
+    $baseQtyPerSlot = ($slotCount > 0) ? floor($totalOK / $slotCount) : $totalOK;
+    $remQty = ($slotCount > 0) ? ($totalOK % $slotCount) : 0;
+    
+    $idx = 0;
+    foreach ($jamAktifFinal as $jStr) {
+        $slotActual = $baseQtyPerSlot + ($idx < $remQty ? 1 : 0);
+        $slotTarget = ($targetPerJam > 0) ? $targetPerJam : ($ctPcs > 0 ? round(3600 / $ctPcs) : 0);
+        
+        $tableData[$pn_fb]['proses'][$proses_fb]['data_jam'][$jStr] = $slotActual;
+        $hourlyActualSum[$jStr] = $slotActual;
+        $hourlyTargetSum[$jStr] = $slotTarget;
+        $idx++;
     }
 }
 
-// Ambil Ideal CT dari history quality
-$ideal_time_sec = $true_total_prod * $ctPcs;
-$allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $historical_real_dt);
-$final_whitelist_dt = min($historical_whitelist_dt, $allowed_whitelist_sec);
-
-if ($historical_whitelist_dt > 0 && $final_whitelist_dt > 0) {
-    $scale_factor = $final_whitelist_dt / $historical_whitelist_dt;
-    foreach ($whitelist_pareto_map as $wl_label => $wl_dur) {
-        $pareto_map[$wl_label] = ($pareto_map[$wl_label] ?? 0) + round($wl_dur * $scale_factor);
+// Fallback Riwayat Operator jika opHistoryData kosong tapi ada operator teridentifikasi
+if (empty($opHistoryData)) {
+    $fallback_nik = (!empty($nikOP) && $nikOP !== 'default' && $nikOP !== 'Belum Login') ? $nikOP : '';
+    $fallback_nama = (!empty($operatorName) && $operatorName !== 'Belum Login') ? $operatorName : '';
+    
+    if (empty($fallback_nik)) {
+        $res_op_fb = $conn->query("SELECT hq.op_NIK, mo.nama 
+                                   FROM history_quality hq 
+                                   LEFT JOIN master_operator mo ON hq.op_NIK = mo.nik 
+                                   WHERE hq.mcID IN ($in_mcID) AND hq.op_NIK IS NOT NULL AND hq.op_NIK != '' AND hq.op_NIK != 'default' 
+                                   ORDER BY hq.id DESC LIMIT 1");
+        if ($res_op_fb && $res_op_fb->num_rows > 0) {
+            $row_op_fb = $res_op_fb->fetch_assoc();
+            $fallback_nik = $row_op_fb['op_NIK'];
+            $fallback_nama = $row_op_fb['nama'] ?: $fallback_nik;
+        }
+    }
+    
+    if (!empty($fallback_nik)) {
+        $jam_m_disp = !empty($waktu_mulai) ? date('H:i', strtotime($waktu_mulai)) : '18:00';
+        $jam_s_disp = !empty($waktu_selesai) ? date('H:i', strtotime($waktu_selesai)) : '06:00';
+        $opHistoryData[$fallback_nik] = [
+            'op_NIK' => $fallback_nik,
+            'nama' => $fallback_nama ?: ($op_names[$fallback_nik] ?? $fallback_nik),
+            'jam_mulai' => $jam_m_disp,
+            'jam_selesai' => $jam_s_disp,
+            'total_qty' => $totalOK
+        ];
     }
 }
 
-// Convert to arrays for UI sorting
+// Hitung jumlah kolom untuk DataTables (KRITIS: harus konsisten antara thead dan tbody)
+$totalColumns = count($jamAktifFinal) + 4; // Part Name + Part Number + Proses (CT) + [jam columns] + Total
+
+// 1. Hitung Downtime Historis - STANDAR INTERNASIONAL ISO 22400-2 & TPM
+$historical_real_dt = 0;
+$pareto_map = [];
+$tpm_summary_map = [];
+
+$res_dt_all = $conn->query("SELECT hd.timestamp, hd.kode_dt, hd.durasi_detik, md.label_dt 
+                            FROM history_downtime hd 
+                            LEFT JOIN master_downtime md ON hd.kode_dt = md.kode_dt 
+                            WHERE hd.mcID IN ($in_mcID) AND $filter_waktu_hd");
+
+$shift_start_ts = !empty($waktu_mulai) ? strtotime($waktu_mulai) : strtotime($tanggal . ' 00:00:00');
+$shift_end_ts = !empty($waktu_selesai) ? strtotime($waktu_selesai) : strtotime($tanggal . ' 23:59:59');
+
+if ($res_dt_all && $res_dt_all->num_rows > 0) {
+    while ($dt_row = $res_dt_all->fetch_assoc()) {
+        $dt_kode = strtoupper($dt_row['kode_dt']);
+        $dt_label_master = $dt_row['label_dt'];
+        $dt_dur = (int)$dt_row['durasi_detik'];
+        
+        $label = ($dt_kode == 'SB' || $dt_kode == 'STAND BY') ? 'Stand By' : ($dt_kode == 'MESIN OFF' ? 'Mesin Off' : ($dt_label_master ? $dt_label_master : $dt_row['kode_dt']));
+        
+        $end_ts = strtotime($dt_row['timestamp']);
+        $start_ts = $end_ts - $dt_dur;
+        
+        // Time clipping: Hanya hitung durasi yang berada di dalam jam shift/hari
+        $clipped_dur = clipIntervalToShift($start_ts, $end_ts, $shift_start_ts, $shift_end_ts);
+        if ($clipped_dur > 0) {
+            $historical_real_dt += $clipped_dur;
+            $pareto_map[$label] = ($pareto_map[$label] ?? 0) + $clipped_dur;
+            
+            $catInfo = classifyDowntimeCategory($label);
+            $catLabel = $catInfo['category_label'];
+            $tpm_summary_map[$catLabel] = ($tpm_summary_map[$catLabel] ?? 0) + $clipped_dur;
+        }
+    }
+}
+
+$total_real_dt = $historical_real_dt;
+$totalLosstimeMenit = round($total_real_dt / 60);
+if ($totalLosstimeMenit == 0 && !empty($summary['downtime']) && (int)$summary['downtime'] > 0) {
+    $totalLosstimeMenit = round((int)$summary['downtime'] / 60);
+}
+
+// Hitung Planned Production Time (PPT) Sesuai Standar ISO 22400-2
+$ppt_seconds = 0;
+if ($shift_aktif == 'REKAP HARIAN' || $shift_aktif == 'ALL') {
+    $ppt_seconds = 24 * 3600;
+} else {
+    $ppt_seconds = calculateShiftPPTSeconds($conn, $template_aktif, $shift_aktif, $hari_aktif, $waktu_mulai, $shift_end_ts);
+    if ($ppt_seconds <= 0) {
+        $ppt_seconds = 8 * 3600;
+    }
+}
+
+// Kalkulasi OEE Standar Internasional ISO 22400-2
+$prod_for_oee = ($true_total_prod > 0) ? $true_total_prod : ((int)$totalOK + (int)$totalScrap);
+$standardOEE = calculateStandardOEE($ppt_seconds, $total_real_dt, $prod_for_oee, $totalScrap, $ctPcs);
+$availVal = $standardOEE['availability'];
+$perfVal = $standardOEE['performance'];
+$qualVal = $standardOEE['quality'];
+$oeeVal = $standardOEE['oee'];
+
+// Failsafe: Jika dynamic OEE menghasilkan 0 atau Availability 0 tetapi history_summary memiliki data tersimpan valid, gunakan summary!
+if (($oeeVal <= 0 || $availVal <= 0) && !empty($summary['oee']) && (float)$summary['oee'] > 0) {
+    $oeeVal = (float)$summary['oee'];
+    $availVal = (float)($summary['availability'] ?? ($summary['avail'] ?? 100));
+    $perfVal = (float)($summary['performance'] ?? ($summary['perf'] ?? 0));
+    $qualVal = (float)($summary['quality'] ?? 100);
+}
+
+// Sort descending untuk Pareto Chart
 arsort($pareto_map);
-foreach ($pareto_map as $lbl => $val) {
-    if ($val > 0) {
-        $paretoLabels[] = $lbl;
-        $paretoValues[] = $val;
-    }
+$paretoLabels = array_keys($pareto_map); 
+$paretoValues = array_values($pareto_map);
+$paretoMinutes = array_map(function($v) { return max(1, round($v / 60)); }, $paretoValues);
+$paretoColors = [];
+foreach ($paretoLabels as $lbl) {
+    $cat = classifyDowntimeCategory($lbl);
+    $paretoColors[] = $cat['color'];
 }
-
-$totalLosstimeMenit = round(($historical_real_dt + $final_whitelist_dt) / 60);
-
-// OEE data from summary
-$oeeVal = number_format($summary['oee'] ?? 0, 1);
-$availVal = number_format($summary['availability'] ?? 0, 1);
-$perfVal = number_format($summary['performance'] ?? 0, 1);
-$qualVal = number_format($summary['quality'] ?? 0, 1);
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -509,7 +655,8 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap;}
         .header-left { display: flex; align-items: center; gap: 15px; }
         .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; }
-        .btn-back { background: #475569; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 13px; }
+        .btn-back { background: #334155; border: 1px solid var(--border-color); color: white; padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 13px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); display: inline-flex; align-items: center; gap: 6px; }
+        .btn-back:hover { background: #475569; border-color: var(--actual-color); transform: translateX(-2px); }
         
         .card { background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 20px; overflow: hidden; width: 100%;}
         .card-header { background: #252525; padding: 12px 15px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-bottom: 1px solid var(--border-color); }
@@ -566,6 +713,7 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -575,16 +723,19 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
                 <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
                 <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
             <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
+            <?php endif; ?>
         </div>
     </div>
 
     <div class="header">
         <div class="header-left">
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-            <a href="index.php" onclick="history.length > 1 ? history.back() : window.location.href='index.php'; return false;" class="btn-back">← Kembali ke History</a>
+            <a href="index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Kembali ke History</a>
         </div>
         <div style="text-align:center; flex-grow:1;">
-            <h2 style="margin:0;">📜 ARSIP: <?= htmlspecialchars($mcID) ?> 
+            <h2 style="margin:0;">📜 ARSIP: <?= htmlspecialchars($namaMesin) ?> <span style="font-size:15px; color:#94a3b8;">(<?= htmlspecialchars($stringMcID) ?>)</span> 
                 <span style="color:#00bfa5;">(<?= htmlspecialchars($shift_aktif) ?>)</span>
             </h2>
         </div>
@@ -678,8 +829,13 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
                         <?php
                         if ($res_ng_summary && $res_ng_summary->num_rows > 0) {
                             while($ngRow = $res_ng_summary->fetch_assoc()) {
-                                $scrap_row = (int)$ngRow['qty'];
-                                echo "<tr><td style='color:#00bfa5; font-weight:bold;'>".htmlspecialchars($partName)."</td><td>".htmlspecialchars($partNumber)."</td><td>".htmlspecialchars($ngRow['nama_defect'] ?: 'Lain-lain')."</td><td>{$scrap_row} Pcs</td><td style='color:#ffeb3b;'>0 Pcs</td><td style='color:#ff1744; font-weight:bold;'>{$scrap_row} Pcs</td></tr>";
+                                $pName = !empty($ngRow['log_part_name']) ? $ngRow['log_part_name'] : $partName;
+                                $pNum = !empty($ngRow['log_part_number']) ? $ngRow['log_part_number'] : $partNumber;
+                                $defectName = !empty($ngRow['nama_defect']) ? $ngRow['nama_defect'] : 'Lain-lain';
+                                $qty_p = (int)$ngRow['qty_ng_plus'];
+                                $qty_rep = (int)$ngRow['qty_repair'];
+                                $scrap_row = max(0, (int)$ngRow['net_scrap']);
+                                echo "<tr><td style='color:#00bfa5; font-weight:bold;'>".htmlspecialchars($pName)."</td><td>".htmlspecialchars($pNum)."</td><td>".htmlspecialchars($defectName)."</td><td>{$qty_p} Pcs</td><td style='color:#ffeb3b;'>{$qty_rep} Pcs</td><td style='color:#ff1744; font-weight:bold;'>{$scrap_row} Pcs</td></tr>";
                             }
                         } else { echo "<tr><td colspan='6' style='padding:15px; color:#777; text-align:center;'>Belum ada laporan NG.</td></tr>"; }
                         ?>
@@ -692,6 +848,12 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
                 <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">TOTAL REPAIR</div><div class="summary-val" style="color:#ffeb3b;"><?= $totalRepair ?> <span style="font-size:14px;">Pcs</span></div></div>
                 <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">TOTAL AKUMULASI SCRAP</div><div class="summary-val" style="color:#ff1744;"><?= $totalScrap ?> <span style="font-size:14px;">Pcs</span></div></div>
             </div>
+            <div class="summary-metrics" style="margin-top: 15px; border-top: 1px dashed var(--border-color); padding-top: 15px;">
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">AVAILABILITY (A)</div><div class="summary-val" style="color:#38bdf8;"><?= $availVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">PERFORMANCE (P)</div><div class="summary-val" style="color:#a78bfa;"><?= $perfVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">QUALITY (Q)</div><div class="summary-val" style="color:#34d399;"><?= $qualVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">OEE STANDAR (ISO)</div><div class="summary-val" style="color:<?= $oeeVal >= 85 ? '#00e676' : ($oeeVal >= 75 ? '#ffea00' : '#ff1744') ?>; font-weight:900;"><?= $oeeVal ?>%</div></div>
+            </div>
         </div>
     </div>
 
@@ -703,7 +865,7 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
             </div>
         </div>
         <div class="card">
-            <div class="card-header" onclick="toggleCard(this)"><h3 class="card-title">📊 Dekidaka (<?= htmlspecialchars($shift_aktif) ?>)</h3><span class="card-toggle">−</span></div>
+            <div class="card-header" onclick="toggleCard(this)"><h3 class="card-title">📊 Actual vs Target (<?= htmlspecialchars($shift_aktif) ?>)</h3><span class="card-toggle">−</span></div>
             <div class="card-body">
                 <div style="display:flex; justify-content:center; gap: 40px; margin-bottom: 20px;">
                     <div style="text-align:center;">
@@ -821,8 +983,38 @@ $qualVal = number_format($summary['quality'] ?? 0, 1);
         setInterval(updateClock, 1000); updateClock();
 
         const paretoCtx = document.getElementById('paretoChart').getContext('2d');
-        const dtLabels = <?= json_encode(!empty($paretoLabels) ? $paretoLabels : ['No Downtime']) ?>; const dtData = <?= json_encode(!empty($paretoValues) ? $paretoValues : [0]) ?>;
-        new Chart(paretoCtx, { type: 'doughnut', data: { labels: dtLabels, datasets: [{ data: dtData, backgroundColor: dtLabels.map(l => stringToColor(l)), borderWidth: 0, cutout: '70%' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#ffffff' } }, datalabels: { display: false } } } });
+        const dtLabels = <?= json_encode(!empty($paretoLabels) ? $paretoLabels : ['No Downtime']) ?>;
+        const dtData = <?= json_encode(!empty($paretoMinutes) ? $paretoMinutes : [0]) ?>;
+        const dtColors = <?= json_encode(!empty($paretoColors) ? $paretoColors : ['#3b82f6']) ?>;
+        new Chart(paretoCtx, { 
+            type: 'doughnut', 
+            data: { 
+                labels: dtLabels, 
+                datasets: [{ 
+                    data: dtData, 
+                    backgroundColor: dtColors, 
+                    borderWidth: 0, 
+                    cutout: '70%' 
+                }] 
+            }, 
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false, 
+                plugins: { 
+                    legend: { position: 'bottom', labels: { color: '#ffffff' } }, 
+                    datalabels: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.label || '';
+                                let val = context.parsed || 0;
+                                return label + ': ' + val + ' Menit';
+                            }
+                        }
+                    }
+                } 
+            } 
+        });
 
         const dekidakaCtx = document.getElementById('dekidakaChart').getContext('2d');
         new Chart(dekidakaCtx, { type: 'bar', data: { labels: <?= json_encode(!empty($jamAktifFinal) ? $jamAktifFinal : ['No Data']) ?>, datasets: [ { label: 'Actual', data: <?= json_encode(!empty($hourlyActualSum) ? array_values($hourlyActualSum) : [0]) ?>, backgroundColor: '#00bfa5', borderRadius: 2 }, { label: 'Target', data: <?= json_encode(!empty($hourlyTargetSum) ? array_values($hourlyTargetSum) : [0]) ?>, backgroundColor: '#ff1744', borderRadius: 2 } ] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#ffffff' } }, datalabels: { display: false } }, scales: { y: { grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }, x: { grid: { display: false }, ticks: { color: '#fff' } } } } });

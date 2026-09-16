@@ -120,6 +120,7 @@ require_once __DIR__ . '/../auth_check.php';
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>

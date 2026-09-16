@@ -10,7 +10,10 @@ $zipFile = 'C:\xampp\htdocs\iot_backup_' . date('Ymd_His') . '.zip';
 
 // Ambil argument update dari command line
 $updateDetails = isset($argv[1]) ? $argv[1] : "Pembaruan rutin sistem IoT.";
-$caption = "📦 *UPDATE SISTEM IOT*\n📅 Tanggal: " . date('Y-m-d H:i:s') . "\n\n*Detail Update:*\n" . $updateDetails;
+$caption = "📦 <b>UPDATE SISTEM IOT</b>\n📅 Tanggal: " . date('Y-m-d H:i:s') . "\n\n<b>Detail Update:</b>\n" . htmlspecialchars($updateDetails, ENT_QUOTES, 'UTF-8');
+if (mb_strlen($caption) > 1000) {
+    $caption = mb_substr($caption, 0, 990) . '...';
+}
 
 echo "Mulai mengompres direktori IoT...\n";
 
@@ -32,15 +35,18 @@ if ($zip->open($zipFile, ZipArchive::CREATE | ZipArchive::OVERWRITE) === TRUE) {
             $filePath = $file->getRealPath();
             $relativePath = substr($filePath, strlen($sourceDir) + 1);
             
-            // Exclude .git and .agents folders if desired to save size
-            if (strpos($relativePath, '.git') !== false) {
+            // Standarisasi slash untuk ZIP agar tidak error saat diekstrak di OS tertentu
+            $relativePath = str_replace('\\', '/', $relativePath);
+            
+            // Exclude folder git dan sisa .git
+            if (strpos($relativePath, 'git') === 0 || strpos($relativePath, '.git') === 0 || strpos($relativePath, '/git/') !== false) {
                 continue;
             }
 
             $zip->addFile($filePath, $relativePath);
             
             if (method_exists($zip, 'setEncryptionName')) {
-                $zip->setEncryptionName($relativePath, ZipArchive::EM_AES_256);
+                $zip->setEncryptionName($relativePath, ZipArchive::EM_TRAD_PKWARE);
             }
         }
     }
@@ -60,7 +66,7 @@ $data = [
     'chat_id' => $chatId,
     'document' => $cfile,
     'caption' => $caption,
-    'parse_mode' => 'Markdown'
+    'parse_mode' => 'HTML'
 ];
 
 $ch = curl_init();

@@ -171,6 +171,8 @@ if (!function_exists('getColorClass')) {
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 15px; flex-wrap: wrap; gap: 15px; }
         .menu-btn { background: var(--card-bg); border: 1px solid var(--border-color); color: white; border-radius: 8px; width: 40px; height: 40px; font-size: 20px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }
         .menu-btn:hover { background: #334155; }
+        .btn-back { background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-muted); padding: 8px 14px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #334155; color: #fff; border-color: var(--primary); transform: translateX(-2px); }
         
         /* FILTER & CARDS */
         .filter-form { background: var(--card-bg); padding: 15px; border-radius: 12px; border: 1px solid var(--border-color); display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 20px; align-items: flex-end; }
@@ -253,6 +255,7 @@ if (!function_exists('getColorClass')) {
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -268,9 +271,10 @@ if (!function_exists('getColorClass')) {
         </div>
     </div>
 
-    <div class="header" style="border:none; margin-bottom:5px; padding-bottom:5px;">
-        <div class="header-left">
+    <div class="header" style="border:none; margin-bottom:10px; padding-bottom:5px; display:flex; justify-content:space-between; align-items:center;">
+        <div class="header-left" style="display:flex; align-items:center; gap:12px;">
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+            <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
         </div>
     </div>
 

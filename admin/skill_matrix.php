@@ -285,8 +285,8 @@ if ($res_op_cnt) {
         .header-left { display: flex; align-items: center; gap: 15px; }
         .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; }
         .header h1 { margin: 0; font-size: 24px; letter-spacing: 1.5px; color: #fff; }
-        .btn-back { background: #334155; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 13px; font-weight: bold; transition: 0.2s; }
-        .btn-back:hover { background: #475569; }
+        .btn-back { background: #334155; border: 1px solid #475569; color: white; padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #475569; border-color: var(--primary); transform: translateX(-2px); }
 
         /* Stats Cards */
         .stats-grid {
@@ -523,13 +523,19 @@ if ($res_op_cnt) {
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
             <?php endif; ?>
-            <a href="<?= BASE_URL ?>admin/skill_matrix.php" class="active">🎯 Skill Matrix Mesin</a>
-            <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
-            <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php if(isset($user_role) && in_array($user_role, ['admin', 'it'])): ?>
+                <a href="<?= BASE_URL ?>admin/skill_matrix.php" class="active">🎯 Skill Matrix Mesin</a>
+                <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
+                <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -540,7 +546,7 @@ if ($res_op_cnt) {
             <h1>🎯 SKILL MATRIX MESIN</h1>
         </div>
         <div>
-            <a href="<?= BASE_URL ?>user/index.php" class="btn-back">← Dashboard</a>
+            <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
         </div>
     </div>
 

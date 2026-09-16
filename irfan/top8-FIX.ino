@@ -1040,6 +1040,7 @@ void loop() {
       doc["prodCount"]   = prodCount;
       doc["OKCount"]     = OKCount;
       doc["NGCount"]     = NGCount;
+      doc["timestamp"]   = timestamp;
 
       char jsonStr[512];
       serializeJson(doc, jsonStr);

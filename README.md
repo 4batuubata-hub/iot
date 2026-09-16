@@ -1,108 +1,161 @@
-# 🏭 OEE Dashboard & SMMS IoT System (PT. CNC)
+# 🏭 SMMS & OEE Dashboard System (ISO 22400-2 & TPM) — PT. CNC
 
-Sistem OEE (*Overall Equipment Effectiveness*) Dashboard ini terintegrasi langsung dengan hardware IoT (Arduino Mega/ESP32) di lantai produksi PT. CNC.
+Dokumentasi arsitektur sistem, panduan teknis, dan standar manufaktur internasional untuk platform **Smart Machine Monitoring System (SMMS)** dan **Overall Equipment Effectiveness (OEE)** di PT. CNC.
 
-Sistem terdiri dari dua bagian utama:
-1. **IoT Firmware (`SMMS_Mega.ino`)**: Menangani hardware mesin, RFID, tombol downtime, perhitungan cycle time, dan pengiriman data ke server MQTT via Ethernet/WiFi.
-2. **Web Dashboard (PHP + MySQL)**: Menerima data (via Node-RED ke MySQL), menghitung OEE secara *realtime*, dan menyimpan *history* produksi.
-
----
-
-## 📁 Struktur File & Penjelasan
-
-### 1. Dashboard Utama (Realtime)
-- **`index.php`**
-  Halaman utama yang menampilkan status seluruh mesin secara *realtime*. Mesin yang statusnya "RUN" berkedip hijau, "STANDBY" kuning, dan "ALARM" merah. Data direfresh setiap 2 detik via AJAX.
-- **`api_dashboard.php`**
-  Backend API (dipanggil oleh `index.php`). Menghitung OEE *realtime* (Availability, Performance, Quality) untuk shift yang sedang berjalan.
-- **`detail.php`**
-  Halaman detail saat sebuah mesin di-klik dari dashboard. Menampilkan rincian performa per-jam (*dekidaka*), profil operator aktif (berdasarkan login RFID), dan tabel pareto *downtime* (jika mesin *standby* namun tidak mencetak barang, maka akan dihitung sebagai *speed loss*).
-
-### 2. History & Arsip Produksi
-- **`history/index.php`**
-  Dashboard *history* produksi yang menampilkan data produksi hari-hari sebelumnya berdasarkan Shift. Dilengkapi filter kalender.
-- **`history/detail.php`**
-  Rincian data produksi *historical* mesin. Menampilkan *dekidaka* lengkap, profil operator yang bertugas pada shift tersebut, dan total perhitungan scrap/repair.
-- **`cron_reset.php`** (Arsitektur Baru)
-  Script background (CLI) yang dieksekusi secara periodik setiap pergantian shift. Script ini memindahkan data ratusan ribu baris secara massal ke `history_*` tanpa membebani dan membuat hang *dashboard* frontend.
-- **`setup_cron.bat`** (Baru)
-  Script otomasi / *installer* Windows Task Scheduler. Menjadwalkan `cron_reset.php` agar berjalan menggunakan *user* `SYSTEM` di *background* tiap 10 menit. Karena berjalan sebagai SYSTEM, reset shift dan perpindahan data tetap bekerja penuh meskipun PC server hanya sampai *Lock Screen* (belum *login* user).
-- **`history/proses_reset.php`**
-  Didepresiasi/digantikan oleh `cron_reset.php`. Sebelumnya digunakan untuk manual reset, namun tidak direkomendasikan untuk skala data besar perusahaan.
-
-### 3. Pengaturan Master Data
-- **`pengaturan_line.php`**
-  Pengaturan jam *auto-reset* per-shift, dan penempatan mesin ke Line tertentu.
-- **`pengaturan_jam.php`**
-  Membuat Template Jam Kerja (contoh: JADWAL KERJA A, JADWAL B). Mengatur jam mulai/selesai istirahat (jam non-efektif).
-- **`skill_matrix.php`**
-  Pemetaan keahlian operator (`master_operator`) pada mesin (`master_mesin` menggunakan kode mesin / `mcID`). Level 1-4. IoT akan mengunci interlock jika level < 3.
-- **`data_operator.php`**
-  Kelola data NIK, Nama, dan Foto operator.
-
-### 4. Keamanan & Akses (RBAC)
-- **`login.php`**
-  Halaman login (jika auth diaktifkan).
-- **`logout.php`**
-  Keluar dari sistem.
-- **`auth_check.php`**
-  Di-include di atas semua file PHP untuk memblokir akses jika user belum login.
-- **`settings_auth.php`**
-  Halaman khusus Admin/IT untuk menambah user (Admin, IT, User) dan menyalakan/mematikan paksa kewajiban login.
+Sistem ini telah dimigrasikan secara penuh ke standar manufaktur internasional:
+- **ISO 22400-2**: *Manufacturing operations management key performance indicators (KPIs)*.
+- **TPM (Total Productive Maintenance) Six Big Losses**: Klasifikasi downtime murni tanpa bias whitelist.
+- **SEMI E10**: Standar klasifikasi waktu operasional (*Operating Time vs Non-Scheduled Time*).
 
 ---
 
-## 🔄 Alur Integrasi IoT ke Web
+## 🗺️ 1. Peta Arsitektur Sistem Menyeluruh
 
-1. **Setup Mesin**: Teknisi menekan CTRL + PROGRAM+ di mesin, memasukkan ID Mesin. Node-RED mengecek `master_mesin` di MySQL dan membalas valid/invalid. Tersimpan di EEPROM.
-2. **Login RFID**: Operator menempelkan ID Card (RFID PN532). Node-RED mencari NIK, mengecek `skill_matrix`. Jika skill < 3, mesin tetap *Interlock* (terkunci). Jika skill >= 3, mesin *Unlock*.
-3. **Produksi**: IoT membaca sensor *Counter* dan status mesin (RUN/STANDBY/ALARM). IoT mem-publish JSON secara konstan ke Node-RED, yang me-Log datanya ke tabel `log_quality`.
-4. **Downtime**: Operator menekan 1 dari 25 tombol downtime. IoT mengirim durasinya saat mesin kembali RUN. Masuk ke tabel `log_downtime`.
-5. **Dashboard Web**: `index.php` membaca `log_quality`, menghitung OEE berdasarkan `master_ct` dan jam kerja aktual, lalu menampilkannya secara langsung.
-6. **Reset Shift (Cron/Task Scheduler)**: Pada jam pergantian shift (misal 16:00 atau 06:00), Windows Task Scheduler memicu `cron_reset.php`. Tabel `log_*` yang sangat besar secara background dipindahkan ke `history_*`. Mesin memulai produksi di lembaran tabel baru yang kosong sehingga akses data tetap super cepat.
+Alur data berjalan secara terintegrasi dari modul sensor fisik mesin hingga dashboard pemantauan live dan rekapitulasi tutup buku:
 
----
+```mermaid
+graph TD
+    subgraph EDGE_HARDWARE [Lapisan Perangkat Keras & Edge]
+        M[Sensor Mesin & Counter] --> Mega[Arduino Mega 2560 + RTC DS3231]
+        OP[RFID RC522] --> ESP[ESP32 / Interlock Relay]
+        Mega -->|MQTT JSON + Timestamp Fisik| NR[Node-RED Broker & Flow]
+    end
 
-## 🎯 Fitur Khusus: Smart Break (Target-Aware Loss Time)
+    subgraph DATABASE_LAYER [Lapisan Database & Trigger Defense]
+        NR -->|Direct SQL Insert| LQ[(log_quality)]
+        TRG_B[Trigger: before_log_quality_insert] -.->|Auto Cavity & Delta Count| LQ
+        TRG_A[Trigger: after_log_quality_insert] -.->|Physical Capping 14.400s & Micro-Filter| LD[(log_downtime)]
+    end
 
-Sistem OEE CNC dilengkapi dengan algoritma toleransi istirahat otomatis yang menjamin keadilan perhitungan performa (OEE) bagi operator yang bekerja cepat. 
+    subgraph ENGINE_LAYER [Lapisan Logika Bisnis & Penjadwalan]
+        HJ[helper_jadwal.php]
+        HJ -->|Work Window 07:00-16:00/07:30-16:30| CLIP[Shift Clipping Engine]
+        HJ -->|ISO 22400-2 & 6 TPM Losses| CALC[calculateStandardOEE]
+    end
 
-- **Masalah:** Operator yang berhasil menyelesaikan target harian lebih cepat (atau dalam *bucket* jam fleksibel/overlap) sering kali dihukum oleh OEE jika mesin mereka berstatus `Stand By` atau `Mesin Off` di sisa waktu luang mereka.
-- **Solusi Smart Break:** Sistem akan mengevaluasi pencapaian Aktual vs Target di setiap jam. Jika di suatu jam **Aktual $\ge$ Target**, maka sistem akan secara otomatis **menganulir (menghapus)** status-status *downtime* yang bersifat personal/istirahat dari perhitungan *Loss Time* dan *Pareto Chart*.
-- **Daftar Putih (Whitelist) Status yang Dimaafkan:**
-  1. `Stand By`
-  2. `Mesin Off`
-  3. `Toilet`, `Minum`, `Sholat`
-- **Dampak pada OEE:** Karena *Loss Time* personal dianulir saat target tercapai, nilai **Availability** akan tetap 100%. Waktu Operasi (*Operating Time*) tetap utuh, sehingga nilai **Performance** operator bisa meroket secara proporsional hingga di atas 100% (contoh: 115%, 145%) sesuai dengan rasio kecepatan kerja mereka yang melampaui standar *Cycle Time*. 
-- **Catatan Penting:** Kerusakan mesin (`Alarm`, `Problem Mesin`, dll) **TETAP DICATAT** sebagai *Loss Time* mutlak, terlepas dari target tercapai atau tidak, agar tetap masuk laporan Maintenance.
+    subgraph PRESENTATION_LAYER [Lapisan Tampilan & Diagnostik]
+        LQ --> API[api_dashboard.php - 2s AJAX]
+        API --> TV[user/index.php - TV Line Dashboard]
+        LQ --> DET[user/detail.php - Analisis Mesin & Dekidaka]
+    end
 
----
-
-## 🕒 Fitur Khusus: Otomatis Lembur (*Sequential Overtime* & Sapu Ranjau)
-
-Dashboard OEE dan Grafik History dilengkapi dengan logika perakitan keranjang waktu (bucket) dinamis jika jam produksi mesin melampaui jadwal standar (khususnya untuk *shift* malam dimana admin absen):
-- **Sequential Buckets**: Jika mesin memproduksi barang melebihi jadwal akhir shift (contoh: > 04:30 pagi), sistem akan dengan cerdas menyambung waktu lembur dalam rentang 1 jam berurutan yang menempel erat dari sisa jadwal terakhir (`04:30 - 05:30`, `05:30 - 06:30`, dst).
-- **Anti Tumpang Tindih**: Menghilangkan masalah *visual glitch* grafik bertabrakan/tumpang tindih (overlap) antara jam riil dan jam lembur (menghindari keranjang buatan seperti `04:00 - 05:00` yang menindih `03:30 - 04:30`).
-- **Smart Auto-Lembur (Sapu Ranjau)**: Sistem reset shift (`cron_reset.php`) sekarang bersifat per-mesin, bukan global. Mesin yang melakukan "lembur siluman" (tetap produksi setelah jadwal habis tanpa lapor) tidak akan terpotong datanya jika cron berjalan. Mesin tersebut hanya akan direset (Sapu Ranjau) jika mesin telah menganggur (idle) selama minimal 15 menit setelah waktu operasi terakhirnya, dan waktu tersebut sudah melewati batas jadwal shift normalnya.
-- **Data Proportionality (Capping)**: Jika sebuah mesin lembur sampai jam 17:30 dan cron baru mengeksekusi reset pada jam 18:00, maka durasi `losstime` antara 17:30 - 18:00 tidak akan dibebankan pada shift tersebut. Waktu akhir shift (*End Shift*) akan dikunci/di-cap pada pukul 17:30 sesuai dengan jejak produksi terakhir mesin.
-
----
-
-## ⚡ Arsitektur Performa Tinggi (Enterprise-Scale)
-
-Untuk mengatasi masalah *hang* / `Connecting to Machine...` yang disebabkan oleh ratusan ribu data per-shift, sistem menggunakan arsitektur performa tinggi:
-
-1. **`delta_prodCount` & MySQL Trigger**: 
-   Database tidak lagi membebani *web server* PHP dengan *loop array* besar untuk menghitung total produk. Kolom `delta_prodCount` merekam penambahan produksi di tingkat DB menggunakan trigger `before_log_quality_insert`. Trigger ini secara otomatis memfilter lonjakan data (*noise*), menangani hitungan *cavity* produk, dan menyimpan selisih penambahan akhir.
-2. **`SUM(delta_prodCount)` Aggregation**: 
-   Script `api_dashboard.php` bekerja dengan sangat cepat (~1 detik) hanya bermodalkan satu perintah SQL Agregat `SUM(delta_prodCount)` dari database.
-3. **Decoupled Background Shift Reset (`cron_reset.php`)**:
-   Logika pembersihan data akhir shift (Safe Reset) sepenuhnya dipisahkan dari frontend dashboard web, untuk mencegah tabel MySQL ter-*lock* saat user sedang mengakses web.
+    subgraph HISTORY_LAYER [Lapisan Tutup Buku & Catch-Up Reset]
+        CRON[cron_reset.php - Sapu Ranjau]
+        CRON -->|Snapshot Offset SEBELUM Delete| MM[(master_mesin)]
+        CRON -->|Rekap Standard OEE + Lembur| HS[(history_summary)]
+        HS --> H_UI[user/history/index.php & detail.php]
+    end
+```
 
 ---
 
-## 🛠️ Konfigurasi Tambahan
+## ⚙️ 2. Rincian 6 Lapisan Fungsional
 
-- **Database**: `koneksi.php`
-- **Default Login IT**: `admin` / `password` (jika sistem auth diaktifkan).
-- **Timezone**: Seluruh query di PHP memaksakan zona waktu `SET time_zone = '+07:00'` (WIB / Waktu Indonesia Barat) agar tidak terjadi selisih jam saat deploy server.
+### Lapisan 1: Perangkat Keras & Edge Ingestion
+1. **Arduino Mega 2560 & RTC Fisik (`irfan/top3.ino`, `irfan/top8-FIX.ino`)**:
+   - Membaca pulsa stroke mesin, status tombol downtime (25 tombol fisik), dan NIK operator.
+   - Menggunakan tipe data `unsigned long` 32-bit untuk mencegah overflow counter (-32K).
+   - Menyimpan counter ke EEPROM menggunakan algoritma **Ring Buffer Wear-Leveling 100 Slot** agar cip tidak aus.
+   - Membaca waktu nyata dari modul RTC hardware dan menyertakannya ke dalam payload MQTT: `doc["timestamp"] = timestamp;`.
+2. **ESP32 & Modul RFID**:
+   - Berfungsi **EKSKLUSIF** untuk autentikasi operator dan interlock relay mesin (Skill Matrix Level 1–4).
+   - **Aturan Tegas**: Tidak ada kartu RFID lembur. Lembur disetujui secara digital oleh Foreman/Supervisor via web.
+3. **Node-RED (`irfan/flows-FIX.json`)**:
+   - Berfungsi sebagai jembatan MQTT ke MySQL.
+   - Node `log_quality` (`cb6629c14e852d22`) men-sanitasi format waktu fisik (`ts = d.timestamp.replace('T', ' ')`) dan mengeksekusi `INSERT INTO log_quality`.
+
+---
+
+### Lapisan 2: Benteng Database & Trigger MySQL
+1. **Trigger `before_log_quality_insert`**:
+   - Menghitung `delta_prodCount` otomatis dari selisih `prodCount` baru terhadap `raw_prodCount` sebelumnya.
+   - Mengalikan output stroke dengan faktor `cavity` dari tabel `master_ct`.
+   - Mengizinkan lonjakan wajar ($\Delta \le 1000$ pcs) pasca server boot/lag jaringan, dan otomatis memulihkan baseline jika Arduino reboot (counter berbalik $\le 5$).
+2. **Trigger `after_log_quality_insert`**:
+   - Mencatat otomatis durasi downtime saat mesin berpindah dari status non-running.
+   - **Physical Capping**: Durasi di atas 4 jam (14.400 detik) otomatis diabaikan (`durasi = 0`) karena merupakan jeda mesin mati antar-shift / akhir pekan, bukan downtime aktif.
+   - **Dukungan Shift 2 Lintas Tengah Malam**: Menggunakan `TIMESTAMPDIFF(SECOND, start, end)` sehingga kerusakan malam (misal 23:45 s/d 00:15) tercatat akurat 1.800 detik (30 menit) tanpa terhapus oleh pergantian tanggal.
+   - **Penyaringan Durasi Mikro**: Durasi $< 30$ detik diabaikan untuk mencegah polusi data akibat operator salah tekan tombol.
+   - Status `'Mesin Off'` diikutsertakan agar insiden pemadaman listrik/MCB trip pada jam kerja dihitung sah sebagai *Unplanned Downtime*.
+
+---
+
+### Lapisan 3: Engine Penjadwalan & Waktu Shift (`helper_jadwal.php`)
+1. **Multi-Jadwal Lini Produksi (`getActiveShift`)**:
+   - Mendukung multi-template (Jadwal Kerja A: 07:00–16:00, Jadwal Kerja B: 07:30–16:30, Shift 2: 19:30–04:30).
+   - Menyediakan batas `work_start` dan `work_end` riil yang memproteksi jam persiapan (06:00–07:00) dari penyerapan downtime palsu.
+2. **Kategorisasi TPM Six Big Losses (`classifyDowntimeCategory`)**:
+   - Memetakan 25 tombol downtime fisik ke dalam 6 kategori kerugian TPM:
+     * *Equipment Failure / Breakdown* (Problem Mesin, Wire Las Macet, Nozzle Tip, dll).
+     * *Setup and Adjustment* (Dandory, Teaching, QC Trial, ENG Trial).
+     * *Idling and Minor Stoppages* (Toilet, Minum, Sholat, Operator Izin).
+     * *Reduced Speed* (Tambahan Proses, PSM, 5P/5S).
+     * *Process Defects* (Problem Kualitas).
+     * *Reduced Yield / Planned Pause* (Material Habis, Tunggu Material, Sarana, No Planning).
+3. **Standar OEE ISO 22400-2 (`calculateStandardOEE`)**:
+   - Menghitung Availability, Performance, Quality, dan OEE murni tanpa whitelist manipulatif.
+   - Seluruh operasi pembagian dilindungi dari *Division by Zero*.
+
+---
+
+### Lapisan 4: Dashboard Realtime & Diagnostik Mesin
+1. **TV Line Monitoring (`user/index.php` & `api_dashboard.php`)**:
+   - Polling AJAX setiap 2 detik dengan respon JSON berkecepatan tinggi.
+   - Menggunakan Single Source of Truth: `SUM(delta_prodCount)` murni dari `log_quality`.
+   - Mengakumulasi downtime pemadaman berjalan (*ongoing timeout downtime*) hingga $\min(\text{time}(), \text{shift\_end\_ts})$.
+2. **Diagnostik Detail Mesin (`user/detail.php`)**:
+   - Grafik jam-jaman produksi (*Dekidaka*) aktual vs target.
+   - Diagram Pareto Downtime terurut descending berdasarkan durasi detik riil.
+   - Profil operator aktif, foto, dan badge level Skill Matrix (Level 1–4).
+
+---
+
+### Lapisan 5: Tutup Buku Shift & Catch-Up Reset
+1. **Pekerja Latar Belakang (`cron_reset.php`)**:
+   - Menerapkan **Urutan Eksekusi Anti-Macet**:
+     $$\text{Ambil Counter Terakhir} \rightarrow \text{Update } offset\_raw\_produksi \rightarrow \text{Rekap History} \rightarrow \text{DELETE } log\_quality$$
+   - Menjamin angka counter mesin baru langsung mulai dari 0 tanpa risiko macet membeku.
+   - Kebal server mati semalaman: skrip akan melakukan *catch-up reset* otomatis saat server kembali menyala.
+2. **Tabel `history_summary`**:
+   - Dilengkapi kolom lembur permanen: `status_lembur`, `jam_lembur_selesai`, `durasi_lembur_menit` sehingga rekap historis lembur tetap utuh meskipun server mati semalaman.
+
+---
+
+### Lapisan 6: Konfigurasi & Otorisasi
+- **`mesin_override`**: Pengelolaan jadwal lembur resmi (*Overtime Digital Approval*) dengan status `PENDING`, `APPROVED`, dan `REJECTED`.
+- **`setting/pengaturan_jam.php`**: Manajemen master slot jam kerja dan jam istirahat.
+- **`koneksi.php`**: Konfigurasi koneksi MySQL terpusat dengan penguncian zona waktu `Asia/Jakarta` (`+07:00` WIB).
+
+---
+
+## 🛡️ 3. Matriks Penyelesaian 7 Titik Rawan Operasional
+
+| No | Titik Rawan Operasional | Potensi Masalah Fatal | Solusi Terpasang (Quality First) | Status |
+|:--:|:-----------------------|:---------------------|:--------------------------------|:------:|
+| **1** | **Blackout Server Semalam** | Server mati jam 16:00, nyala 08:30. Cron tidak jalan, counter shift baru macet. | Catch-up reset di `cron_reset.php` mengambil offset sebelum delete; persistensi status lembur di `history_summary`. | ✅ **AMAN** |
+| **2** | **Mesin Mati / MCB Trip** | Mesin mati 2 jam saat jam kerja, downtime tidak tercatat karena mesin tidak kirim sinyal. | `min(time(), shift_end_ts)` mengakumulasi pemadaman berjalan sebagai *Unplanned Downtime* sah. | ✅ **AMAN** |
+| **3** | **Bentrok Jadwal A vs B** | Lini A mulai 07:00, Lini B mulai 07:30. Jam 06:00–07:00 terpotong downtime palsu. | `work_start` & `work_end` riil melindungi jeda pra-shift dari potongan downtime. | ✅ **AMAN** |
+| **4** | **Reset vs Shift Malam** | Shift 2 lintas tengah malam (23:45–00:15) terhapus karena perbedaan tanggal (`DATE != DATE`). | Trigger diperbarui dengan `TIMESTAMPDIFF <= 14400s`, kerusakan tengah malam Shift 2 tercatat 100% presisi. | ✅ **AMAN** |
+| **5** | **Lembur Belum Disetujui** | Operator lembur tetapi Foreman belum klik ACC di web. | Status `PENDING` tetap mencatat jam reguler; saat disetujui (`APPROVED`), slot langsung terintegrasi otomatis. | ✅ **AMAN** |
+| **6** | **Rekap Harian vs Live Detail** | Angka produksi di history beda dengan halaman detail karena beda formula offset. | Standarisasi mutlak ke Single Source of Truth `SUM(delta_prodCount)` di seluruh modul. | ✅ **AMAN** |
+| **7** | **Double Input Data Mesin** | Data dobel dari operator manual dan pulsa sensor otomatis. | Pembagian peran tegas: Sensor otomatis untuk hitungan produksi; Operator hanya memilih kode downtime & NIK. | ✅ **AMAN** |
+
+---
+
+## 🚀 4. Panduan Deployment Server Perusahaan (Production Checklist)
+
+1. **Database MySQL**:
+   - Pastikan database `simulasi` sudah memuat seluruh tabel.
+   - Eksekusi file [trigger.sql](file:///c:/xampp/htdocs/iot/trigger.sql) untuk memasang trigger `before_log_quality_insert` dan `after_log_quality_insert`.
+   - Pastikan tabel `history_summary` memiliki kolom lembur (`status_lembur`, `jam_lembur_selesai`, `durasi_lembur_menit`).
+2. **Kompatibilitas Linux Server**:
+   - Seluruh query SQL di file PHP telah diaudit dan menggunakan **nama tabel huruf kecil** (`master_mesin`, `log_quality`, dll.), sehingga 100% aman pada server Linux (`lower_case_table_names = 0`).
+3. **Node-RED**:
+   - Import flow [irfan/flows-FIX.json](file:///c:/xampp/htdocs/iot/irfan/flows-FIX.json) ke instance Node-RED perusahaan.
+   - Atur timer `Inject` node setiap 10–15 menit untuk memanggil `http://localhost/iot/cron_reset.php` sebagai pengganti Windows Task Scheduler jika ada restriksi Administrator.
+4. **Verifikasi Sistem**:
+   - Jalankan skrip verifikasi otomatis via terminal server:
+     ```bash
+     php scratch/verify_all_phases.php
+     ```
+   - Seluruh indikator harus berstatus `[PASS]`.

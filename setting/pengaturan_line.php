@@ -138,8 +138,8 @@ $res_line = $conn->query($sql_line);
         }
         .header-left { display: flex; align-items: center; gap: 15px; }
         .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; }
-        .btn-back { background: #475569; color: white; padding: 8px 16px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 13px; }
-        .btn-back:hover { background: #64748b; }
+        .btn-back { background: #334155; border: 1px solid #475569; color: white; padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #475569; border-color: var(--primary); transform: translateX(-2px); }
 
         .layout-container {
             max-width: 950px; margin: 0 auto; display: flex; flex-direction: column; gap: 25px;
@@ -235,6 +235,7 @@ $res_line = $conn->query($sql_line);
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php" class="active">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -243,6 +244,9 @@ $res_line = $conn->query($sql_line);
                 <a href="<?= BASE_URL ?>admin/skill_matrix.php">🎯 Skill Matrix Mesin</a>
                 <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
                 <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
             <?php endif; ?>
         </div>
     </div>
@@ -253,7 +257,7 @@ $res_line = $conn->query($sql_line);
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
             <h1 style="margin:0; font-size:22px;">⚙️ PENGATURAN LINE & AUTO-RESET (2 SHIFT)</h1>
         </div>
-        <a href="<?= BASE_URL ?>user/index.php" class="btn-back">← Dashboard</a>
+        <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
     </div>
 
     <div class="layout-container">

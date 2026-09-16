@@ -83,6 +83,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <div style="margin-top: 20px; font-size: 12px; color: #64748b;">
             admin / admin
         </div>
+        <div style="margin-top: 15px;">
+            <a href="user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" style="color: #64748b; font-size: 13px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: color 0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='#64748b'">← Kembali ke Dashboard</a>
+        </div>
     </div>
 </body>
 </html>

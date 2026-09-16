@@ -19,8 +19,8 @@ if ($auth_enabled == 1 && !isset($_SESSION['user_id'])) {
     exit;
 }
 
-// Daftar halaman khusus  Setting
-$it_only_pages = ['pengaturan_line.php', 'pengaturan_jam.php', 'settings_auth.php'];
+// Daftar halaman khusus Setting / IT
+$it_only_pages = ['pengaturan_line.php', 'pengaturan_jam.php', 'pengaturan_jam_detail.php', 'settings_auth.php', 'recalculate_history.php'];
 
 // === PENGECUALIAN UNTUK HALAMAN IT ===
 // Meskipun auth_enabled = 0, khusus halaman IT WAJIB login.
@@ -40,19 +40,21 @@ $admin_it_pages = ['skill_matrix.php', 'data_operator.php', 'proses_reset.php', 
 
 // 1. Cek Akses Halaman Setting (Hanya boleh dibuka oleh Tim Setting / IT)
 if (in_array($current_script, $it_only_pages) && $user_role !== 'it') {
+    $back_url = BASE_URL . 'user/index.php';
     die("<div style='text-align:center; padding: 50px; font-family:sans-serif; color:white; background:#111; height:100vh;'>
             <h2 style='color:#ef4444;'>⛔ AKSES DITOLAK</h2>
             <p>Hanya Tim Setting / IT yang dapat mengakses halaman ini.</p>
-            <a href='index.php' style='color:#00bfa5;'>Kembali ke Dashboard</a>
+            <a href='{$back_url}' style='color:#00bfa5; text-decoration:none; font-weight:bold;'>← Kembali ke Dashboard</a>
          </div>");
 }
 
 // 2. Cek Akses Halaman Master Data (Boleh dibuka Admin & Setting)
 if (in_array($current_script, $admin_it_pages) && !in_array($user_role, ['admin', 'it'])) {
+    $back_url = BASE_URL . 'user/index.php';
     die("<div style='text-align:center; padding: 50px; font-family:sans-serif; color:white; background:#111; height:100vh;'>
             <h2 style='color:#ef4444;'>⛔ AKSES DITOLAK</h2>
             <p>Role USER tidak memiliki izin untuk mengedit Master Data.</p>
-            <a href='index.php' style='color:#00bfa5;'>Kembali ke Dashboard</a>
+            <a href='{$back_url}' style='color:#00bfa5; text-decoration:none; font-weight:bold;'>← Kembali ke Dashboard</a>
          </div>");
 }
 ?>

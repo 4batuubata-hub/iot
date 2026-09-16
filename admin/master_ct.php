@@ -263,10 +263,12 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
         .sidebar-menu a:hover, .sidebar-menu a.active { background: #334155; color: var(--primary); border-left: 4px solid var(--primary); padding-left: 30px;}
         
         /* HEADER */
-        .header { display: flex; align-items: center; gap: 15px; margin-bottom: 25px; border-bottom: 1px solid var(--border-color); padding-bottom: 15px; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 25px; border-bottom: 1px solid var(--border-color); padding-bottom: 15px; flex-wrap: wrap; }
         .menu-btn { background: var(--card-bg); border: 1px solid var(--border-color); color: white; border-radius: 8px; width: 40px; height: 40px; font-size: 20px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }
         .menu-btn:hover { background: #334155; }
         .header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; font-weight: 700; background: linear-gradient(90deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .btn-back { background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-muted); padding: 8px 14px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #334155; color: #fff; border-color: var(--primary); transform: translateX(-2px); }
 
         /* DATATABLE OVERRIDES */
         .table-container { background: var(--card-bg); padding: 20px; border-radius: 12px; border: 1px solid var(--border-color); overflow-x: auto; margin-top: 15px; }
@@ -330,6 +332,7 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -346,8 +349,11 @@ if (isset($_GET['ajax']) && $_GET['ajax'] === '1' && isset($_GET['action']) && $
     </div>
 
     <div class="header">
-        <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-        <h1>DAFTAR MASTER CYCLE TIME (CT)</h1>
+        <div style="display:flex; align-items:center; gap:15px;">
+            <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+            <h1>DAFTAR MASTER CYCLE TIME (CT)</h1>
+        </div>
+        <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
     </div>
 
 

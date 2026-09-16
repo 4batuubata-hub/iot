@@ -103,7 +103,49 @@ if ($isAdmin && isset($_POST['btn_delete_operator']) && !empty($_POST['delete_op
     <style>
         :root { --bg: #000; --card: #111; --text: #fff; --primary: #3b82f6; --border: #334155; --danger: #ef4444; }
         body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 20px; }
+        
+        /* Sidebar Styling */
+        .sidebar {
+            position: fixed; top: 0; left: 0;
+            transform: translateX(-100%);
+            width: 280px; height: 100%;
+            background: #1e1e1e; border-right: 1px solid #333;
+            z-index: 1000; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 4px 0 15px rgba(0,0,0,0.5);
+            display: flex; flex-direction: column;
+        }
+        .sidebar.open { transform: translateX(0); }
+        .sidebar-header {
+            padding: 20px; border-bottom: 1px solid #333;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .sidebar-header h2 { margin: 0; font-size: 18px; color: #00bfa5; }
+        .close-btn {
+            background: none; border: none; color: #fff;
+            font-size: 24px; cursor: pointer;
+        }
+        .sidebar-menu { padding: 20px 0; display: flex; flex-direction: column; }
+        .sidebar-menu a {
+            padding: 12px 20px; color: #ccc; text-decoration: none;
+            display: flex; align-items: center; gap: 10px; font-size: 14px;
+            transition: 0.2s;
+        }
+        .sidebar-menu a:hover, .sidebar-menu a.active {
+            background: #2a2a2a; color: #00bfa5; border-left: 4px solid #00bfa5;
+        }
+        #overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6); z-index: 999; display: none;
+        }
+        #overlay.show { display: block; }
+        .menu-btn {
+            background: #1f2937; border: 1px solid #374151; color: #fff;
+            font-size: 18px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+        }
+        .btn-back { background: var(--card); border: 1px solid var(--border); color: #94a3b8; padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #334155; color: #fff; border-color: var(--primary); transform: translateX(-2px); }
+
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
         .btn { padding: 8px 15px; border-radius: 6px; border: none; color: white; cursor: pointer; text-decoration: none; font-size: 14px; }
         .btn-primary { background: var(--primary); }
         .btn-danger { background: var(--danger); }
@@ -117,9 +159,43 @@ if ($isAdmin && isset($_POST['btn_delete_operator']) && !empty($_POST['delete_op
     </style>
 </head>
 <body>
+
+    <!-- SIDEBAR NAVIGATION -->
+    <div id="overlay" onclick="toggleSidebar()"></div>
+    <div id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+            <h2>PT CNC Apps</h2>
+            <button class="close-btn" onclick="toggleSidebar()">×</button>
+        </div>
+        <div class="sidebar-menu">
+            <a href="<?= BASE_URL ?>user/index.php">📊 Dashboard Utama</a>
+            <a href="<?= BASE_URL ?>user/history/index.php">📁 History Produksi</a>
+            <a href="<?= BASE_URL ?>user/summary_oee.php">📈 Rangkuman OEE</a>
+            <?php if(isset($user_role) && $user_role === 'it'): ?>
+                <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
+                <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
+                <a href="<?= BASE_URL ?>setting/settings_auth.php" class="active">🔒 Pengaturan Keamanan</a>
+            <?php endif; ?>
+            <?php if(isset($user_role) && in_array($user_role, ['admin', 'it'])): ?>
+                <a href="<?= BASE_URL ?>admin/skill_matrix.php">🎯 Skill Matrix Mesin</a>
+                <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
+                <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
+            <?php endif; ?>
+        </div>
+    </div>
+
     <div class="header">
-        <h2>🔒 Pengaturan Keamanan & User</h2>
-        <a href="<?= BASE_URL ?>user/index.php" class="btn btn-primary">← Kembali ke Dashboard</a>
+        <div style="display:flex; align-items:center; gap:12px;">
+            <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+            <h2 style="margin:0;">🔒 Pengaturan Keamanan & User</h2>
+        </div>
+        <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
     </div>
 
     <?php if (!$isAdmin): ?>
@@ -217,5 +293,15 @@ if ($isAdmin && isset($_POST['btn_delete_operator']) && !empty($_POST['delete_op
         </div>
 
     <?php endif; ?>
+    <script>
+        function toggleSidebar() {
+            const sb = document.getElementById('sidebar');
+            const ov = document.getElementById('overlay');
+            if (sb && ov) {
+                sb.classList.toggle('open');
+                ov.classList.toggle('show');
+            }
+        }
+    </script>
 </body>
 </html>

@@ -35,8 +35,8 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $filterTanggal)) {
 }
 
 // Query Data History Summary dengan Filter Gabungan
-$query_history = "SELECT hs.*, mm.nama_mesin as master_nama, mm.id_mesin as master_id FROM history_summary hs LEFT JOIN master_mesin mm ON hs.mcID = mm.mcID WHERE hs.tanggal = '$filterTanggal'";
-if ($filterMesin !== 'ALL') { $query_history .= " AND hs.mcID = '$filterMesin'"; }
+$query_history = "SELECT hs.*, mm.nama_mesin as master_nama, mm.id_mesin as master_id FROM history_summary hs LEFT JOIN master_mesin mm ON (hs.mcID = mm.mcID OR hs.mcID = mm.id_mesin) WHERE hs.tanggal = '$filterTanggal'";
+if ($filterMesin !== 'ALL') { $query_history .= " AND (hs.mcID = '$filterMesin' OR mm.id_mesin = '$filterMesin' OR mm.mcID = '$filterMesin')"; }
 if ($filterShift !== 'ALL') { $query_history .= " AND hs.shift = '$filterShift'"; }
 $query_history .= " ORDER BY oee DESC";
 
@@ -85,6 +85,8 @@ $countResult = ($result) ? $result->num_rows : 0;
         .menu-btn { background: var(--card-bg); border: 1px solid var(--border-color); color: white; border-radius: 8px; width: 40px; height: 40px; font-size: 20px; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; }
         .menu-btn:hover { background: #334155; }
         .header h1 { margin: 0; font-size: 22px; letter-spacing: 1px; font-weight: 700; background: linear-gradient(90deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .btn-back { background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-muted); padding: 8px 14px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #334155; color: #fff; border-color: var(--primary); transform: translateX(-2px); }
         
         .filter-container { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex: 1;}
         .filter-select { background: var(--card-bg); color: white; padding: 10px 14px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; cursor: pointer; outline: none; transition: border-color 0.2s; }
@@ -138,7 +140,7 @@ $countResult = ($result) ? $result->num_rows : 0;
     <div id="sidebar" class="sidebar">
         <div class="sidebar-header">
             <h2>PT CNC Apps</h2>
-            <button class="close-btn" onclick="toggleSidebar()">×</button>
+            <button class="close-btn" onclick="toggleSidebar()">&times;</button>
         </div>
         <div class="sidebar-menu">
             <a href="<?= BASE_URL ?>user/index.php">📊 Dashboard Utama</a>
@@ -147,6 +149,7 @@ $countResult = ($result) ? $result->num_rows : 0;
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -161,10 +164,10 @@ $countResult = ($result) ? $result->num_rows : 0;
             <?php endif; ?>
         </div>
     </div>
-
     <div class="header">
         <div class="header-left">
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+            <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
             <h1>📁 HISTORY OEE DATA</h1>
         </div>
         <form method="GET" id="filterForm" class="filter-container">
@@ -181,7 +184,7 @@ $countResult = ($result) ? $result->num_rows : 0;
                 if($res_shift_list && $res_shift_list->num_rows > 0) {
                     while($rs = $res_shift_list->fetch_assoc()) {
                         $sel = ($filterShift == $rs['shift']) ? 'selected' : '';
-                        echo "<option value='".htmlspecialchars($rs['shift'])."' $sel>".htmlspecialchars($rs['shift'])."</option>";
+                        echo "<option value='".htmlspecialchars($rs['shift'])."'>".htmlspecialchars($rs['shift'])."</option>";
                     }
                 }
                 ?>
@@ -194,7 +197,7 @@ $countResult = ($result) ? $result->num_rows : 0;
                 if($res_mesin_list && $res_mesin_list->num_rows > 0) {
                     while($rm = $res_mesin_list->fetch_assoc()) {
                         $sel = ($filterMesin == $rm['mcID']) ? 'selected' : '';
-                        echo "<option value='".htmlspecialchars($rm['mcID'])."' $sel>".htmlspecialchars($rm['nama_mesin'])." (".$rm['mcID'].")</option>";
+                        echo "<option value='".htmlspecialchars($rm['mcID'])."'>".htmlspecialchars($rm['nama_mesin'])." (".htmlspecialchars($rm['mcID']).")</option>";
                     }
                 }
                 ?>
@@ -211,22 +214,52 @@ $countResult = ($result) ? $result->num_rows : 0;
         <?php
         if ($result && $result->num_rows > 0) {
             while ($row = $result->fetch_assoc()) {
-                $oee = $row['oee'];
-                $donutColor = ($oee >= 85) ? 'var(--color-ok)' : (($oee >= 75) ? 'var(--color-warning)' : 'var(--color-ng)');
-                $oeeClass = ($oee >= 85) ? 'oee-ok' : (($oee >= 75) ? 'oee-warn' : 'oee-ng');
-                
+                $oee = (float)($row['oee'] ?? 0);
+                $avail = (float)($row['availability'] ?? ($row['avail'] ?? 0));
+                $perf = (float)($row['performance'] ?? ($row['perf'] ?? 0));
+                $qual = (float)($row['quality'] ?? 0);
+
                 $mcID_card = $row['mcID'];
                 $wm = $row['waktu_mulai'];
                 $ws = $row['waktu_selesai'];
                 $last_part = $row['part_name'];
-                
-                if ($wm && $ws) {
-                    $sql_lp = "SELECT mc.part_name FROM log_quality lq LEFT JOIN master_ct mc ON lq.kode_proses = mc.kode WHERE lq.mcID = '$mcID_card' AND lq.timestamp >= '$wm' AND lq.timestamp <= '$ws' ORDER BY lq.timestamp DESC LIMIT 1";
+
+                if ($wm && $ws && (empty($last_part) || $last_part === 'Tidak Diketahui')) {
+                    $m_check = !empty($row['master_id']) ? "(lq.mcID = '$mcID_card' OR lq.mcID = '{$row['master_id']}')" : "lq.mcID = '$mcID_card'";
+                    $sql_lp = "SELECT mc.part_name FROM history_quality lq LEFT JOIN master_ct mc ON lq.kode_proses = mc.kode WHERE $m_check AND lq.timestamp >= '$wm' AND lq.timestamp <= '$ws' ORDER BY lq.timestamp DESC LIMIT 1";
                     $res_lp = $conn->query($sql_lp);
                     if ($res_lp && $res_lp->num_rows > 0) {
                         $last_part = $res_lp->fetch_assoc()['part_name'];
                     }
                 }
+
+                // Auto-repair untuk data arsip lama yang OEE-nya tercatat 0 padahal total_ok > 0
+                if ($oee <= 0 && (int)$row['total_ok'] > 0) {
+                    $part_check = (!empty($last_part) && $last_part !== 'Tidak Diketahui') ? $last_part : ($row['part_name'] ?? '');
+                    $ct_sec = 0; $ct_jam = 0;
+                    if (!empty($part_check)) {
+                        $p_esc = $conn->real_escape_string($part_check);
+                        $res_c = $conn->query("SELECT ct_pcs, ct_jam FROM master_ct WHERE part_name = '$p_esc' ORDER BY id DESC LIMIT 1");
+                        if ($res_c && $res_c->num_rows > 0) {
+                            $row_c = $res_c->fetch_assoc();
+                            $ct_sec = (float)$row_c['ct_pcs'];
+                            $ct_jam = (float)$row_c['ct_jam'];
+                        }
+                    }
+                    if ($ct_sec > 0 || $ct_jam > 0) {
+                        $shift_hours = ($row['shift'] == 'REKAP HARIAN' || $row['shift'] == 'ALL') ? 24 : 8;
+                        $target_total = ($ct_jam > 0) ? ($ct_jam * $shift_hours) : (($shift_hours * 3600) / $ct_sec);
+                        if ($target_total > 0) {
+                            $perf = round(((int)$row['total_ok'] / $target_total) * 100, 1);
+                            $avail = ($avail > 0) ? $avail : 100.0;
+                            $qual = ($qual > 0) ? $qual : 100.0;
+                            $oee = round(($avail / 100) * ($perf / 100) * ($qual / 100) * 100, 1);
+                        }
+                    }
+                }
+
+                $donutColor = ($oee >= 85) ? 'var(--color-ok)' : (($oee >= 75) ? 'var(--color-warning)' : 'var(--color-ng)');
+                $oeeClass = ($oee >= 85) ? 'oee-ok' : (($oee >= 75) ? 'oee-warn' : 'oee-ng');
                 
                 $display_nama = $row['master_nama'] ?: $row['nama_mesin'];
                 $display_id = $row['master_id'] ?: $row['mcID'];
@@ -250,9 +283,9 @@ $countResult = ($result) ? $result->num_rows : 0;
                         <div class="donut" style="background: conic-gradient(<?= $donutColor ?> 0% <?= $oee ?>%, var(--border-color) <?= $oee ?>% 100%);"></div>
                         <div class="donut-hole"><span class="donut-val"><?= number_format($oee, 1) ?>%</span><span class="donut-label">OEE</span></div>
                     </div>
-                    <div class="bar-group"><div class="bar-label"><span>Availability</span> <span><?= number_format($row['availability'], 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-a" style="width: <?= $row['availability'] ?>%;"></div></div></div>
-                    <div class="bar-group"><div class="bar-label"><span>Performance</span> <span><?= number_format($row['performance'], 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-p" style="width: <?= $row['performance'] ?>%;"></div></div></div>
-                    <div class="bar-group"><div class="bar-label"><span>Quality</span> <span><?= number_format($row['quality'], 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-q" style="width: <?= $row['quality'] ?>%;"></div></div></div>
+                    <div class="bar-group"><div class="bar-label"><span>Availability</span> <span><?= number_format($avail, 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-a" style="width: <?= min(100, $avail) ?>%;"></div></div></div>
+                    <div class="bar-group"><div class="bar-label"><span>Performance</span> <span><?= number_format($perf, 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-p" style="width: <?= min(100, $perf) ?>%;"></div></div></div>
+                    <div class="bar-group"><div class="bar-label"><span>Quality</span> <span><?= number_format($qual, 1) ?>%</span></div><div class="bar-bg"><div class="bar-fill fill-q" style="width: <?= min(100, $qual) ?>%;"></div></div></div>
                 </div>
                 <?php
             }

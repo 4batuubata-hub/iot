@@ -1,6 +1,7 @@
 <?php
 session_start();
 require_once __DIR__ . '/../auth_check.php';
+require_once __DIR__ . '/../helper_jadwal.php';
 date_default_timezone_set('Asia/Jakarta');
 
 $host = "localhost"; $user = "root"; $pass = ""; $db = "simulasi";
@@ -12,6 +13,98 @@ $conn->query("SET time_zone = '+07:00'");
 
 $mcID = isset($_GET['mcID']) ? $conn->real_escape_string($_GET['mcID']) : '';
 if(empty($mcID)) die("<h2 style='color:white; text-align:center;'>Pilih mesin dari dashboard terlebih dahulu!</h2>");
+
+if (!function_exists('getLogicalDay')) {
+    function getLogicalDay($time = null) {
+        if ($time === null) $time = time();
+        $now = date('H:i:s', $time);
+        $day_num = date('N', $time); // 1 (Monday) to 7 (Sunday)
+        
+        // Shift 2 usually runs past midnight into the next day. 
+        // If it's before 06:00 AM, it logically belongs to the previous day's shift schedule.
+        if ($now < '06:00:00') {
+            $day_num = $day_num - 1;
+            if ($day_num == 0) $day_num = 7; // Sunday wrap
+        }
+        
+        if ($day_num >= 1 && $day_num <= 4) return 'SENIN-KAMIS';
+        if ($day_num == 5) return 'JUMAT';
+        if ($day_num == 6 || $day_num == 7) return 'SABTU-MINGGU';
+        
+        return 'SENIN-KAMIS';
+    }
+}
+
+if (!function_exists('getActiveShift')) {
+    function getActiveShift($conn, $line) {
+    $sql_setting = $conn->query("SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1");
+    $row_setting = ($sql_setting && $sql_setting->num_rows > 0) ? $sql_setting->fetch_assoc() : [];
+    $jam_reset_s1 = $row_setting['jam_reset_shift1'] ?? '16:00:00';
+    $jam_reset_s2 = $row_setting['jam_reset_shift2'] ?? '06:00:00';
+
+    $now = date('H:i:s'); 
+    $today = date('Y-m-d');
+    
+    $is_shift_1 = false;
+    if ($jam_reset_s2 <= $jam_reset_s1) {
+        if ($now >= $jam_reset_s2 && $now < $jam_reset_s1) {
+            $is_shift_1 = true;
+        }
+    } else {
+        if ($now >= $jam_reset_s2 || $now < $jam_reset_s1) {
+            $is_shift_1 = true;
+        }
+    }
+
+    $shift_aktif = $is_shift_1 ? 'SHIFT 1' : 'SHIFT 2';
+    if ($is_shift_1) {
+        $mulai = "$today $jam_reset_s2";
+        $selesai = "$today $jam_reset_s1";
+    } else {
+        if ($now >= $jam_reset_s1) {
+            $mulai = "$today $jam_reset_s1";
+            $selesai = date('Y-m-d', strtotime('+1 day')) . " $jam_reset_s2";
+        } else {
+            $mulai = date('Y-m-d', strtotime('-1 day')) . " $jam_reset_s1";
+            $selesai = "$today $jam_reset_s2";
+        }
+    }
+
+    $hari = getLogicalDay(strtotime($mulai));
+
+    $template = getLineTemplate($conn, $line);
+    $templates_to_check = array_unique([$template, 'JADWAL KERJA A']);
+    $slots = [];
+    $found_template = 'JADWAL KERJA A';
+
+    foreach ($templates_to_check as $tpl) {
+        if (empty($tpl)) continue;
+        $tpl_esc = $conn->real_escape_string($tpl);
+        $sql = "SELECT shift, rentang_jam FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_aktif' AND (hari = '$hari' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
+        $res = $conn->query($sql);
+        
+        if ($res && $res->num_rows > 0) {
+            $found_template = $tpl;
+            while($r = $res->fetch_assoc()) {
+                $p = explode('-', $r['rentang_jam']);
+                if(count($p) == 2) {
+                    $slots[] = ['start' => trim($p[0]).":00", 'end' => trim($p[1]).":00"];
+                }
+            }
+            break;
+        }
+    }
+
+    return [
+        'shift' => $shift_aktif,
+        'mulai' => $mulai,
+        'selesai' => $selesai,
+        'template' => $found_template,
+        'hari' => $hari,
+        'slots' => $slots
+    ];
+}
+}
 
 // AJAX ENDPOINT UNTUK AUTO UPDATE OPERATOR PROFILE & SKILL MATRIX
 if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
@@ -58,45 +151,53 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
         ];
         $opSkillInfo = $skillMap[$opSkillLevel] ?? $skillMap[1];
 
-        $line = $info['line'] ?? 'ALL';
-        $sql_tpl = "SELECT nama_template, nama_template_shift1, nama_template_shift2 FROM master_line WHERE nama_line = '$line' LIMIT 1";
-        $res_tpl = $conn->query($sql_tpl);
-        $row_tpl = ($res_tpl && $res_tpl->num_rows > 0) ? $res_tpl->fetch_assoc() : [];
-        $tpl_s1 = $row_tpl['nama_template_shift1'] ?? ($row_tpl['nama_template'] ?? 'DEFAULT');
-        $tpl_s2 = $row_tpl['nama_template_shift2'] ?? ($row_tpl['nama_template'] ?? 'DEFAULT');
-        $now = date('H:i:s'); $today = date('Y-m-d');
-        $waktu_mulai = "$today 00:00:00"; $waktu_selesai = "$today 23:59:59";
-        
-        $templates_to_check = array_unique([$tpl_s1, $tpl_s2, 'DEFAULT']);
-        foreach ($templates_to_check as $template) {
-            if (empty($template)) continue;
-            $tpl_esc = $conn->real_escape_string($template);
-            $res_jam = $conn->query("SELECT shift, rentang_jam FROM master_jam_statis WHERE nama_template = '$tpl_esc' ORDER BY urutan ASC");
-            if (!$res_jam || $res_jam->num_rows == 0) continue;
-            $shift_data = [];
-            while($r = $res_jam->fetch_assoc()) {
-                $p = explode('-', $r['rentang_jam']);
-                if(count($p) == 2) {
-                    $start = trim($p[0]).":00"; $end = trim($p[1]).":00"; $s_name = $r['shift'];
-                    if(!isset($shift_data[$s_name])) { $shift_data[$s_name] = ['start' => $start, 'end' => $end]; } 
-                    else { $shift_data[$s_name]['end'] = $end; }
+        $lineInfo = getMesinLineInfo($conn, $mcID, $info['kode_proses'] ?? '');
+        $line = $lineInfo['line'];
+        $shift_info = getActiveShift($conn, $line);
+        $waktu_mulai = $shift_info['mulai'];
+        $waktu_selesai = $shift_info['selesai'];
+
+        $res_logs_op = $conn->query("SELECT timestamp, op_NIK, prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC, id ASC");
+        $opSessions = [];
+        $currentSession = null;
+        if ($res_logs_op && $res_logs_op->num_rows > 0) {
+            while ($row = $res_logs_op->fetch_assoc()) {
+                $nik = trim($row['op_NIK']);
+                if (empty($nik)) continue;
+                $qty = (int)$row['prodCount'];
+                
+                if ($currentSession === null || $currentSession['nik'] !== $nik) {
+                    if ($currentSession !== null) $opSessions[] = $currentSession;
+                    $currentSession = [
+                        'nik' => $nik,
+                        'jam_mulai' => date('H:i', strtotime($row['timestamp'])),
+                        'jam_selesai' => date('H:i', strtotime($row['timestamp'])),
+                        'prev_qty' => $qty,
+                        'total_qty' => 0
+                    ];
+                } else {
+                    $delta = $qty - $currentSession['prev_qty'];
+                    if ($delta > 0) $currentSession['total_qty'] += $delta;
+                    else if ($delta < 0) $currentSession['total_qty'] += $qty;
+                    $currentSession['prev_qty'] = $qty;
+                    $currentSession['jam_selesai'] = date('H:i', strtotime($row['timestamp']));
                 }
             }
-            foreach($shift_data as $s_name => $times) {
-                $s = $times['start']; $e = $times['end'];
-                if ($s <= $e) { 
-                    if ($now >= $s && $now <= $e) { $waktu_mulai = "$today $s"; $waktu_selesai = "$today $e"; break 2; }
-                } else { 
-                    if ($now >= $s) { $waktu_mulai = "$today $s"; $waktu_selesai = date('Y-m-d', strtotime('+1 day'))." $e"; break 2; }
-                    elseif ($now <= $e) { $waktu_mulai = date('Y-m-d', strtotime('-1 day'))." $s"; $waktu_selesai = "$today $e"; break 2; }
-                }
-            }
+            if ($currentSession !== null) $opSessions[] = $currentSession;
         }
 
-        $res_op_history = $conn->query("SELECT lq.op_NIK, mo.nama, MIN(TIME(lq.timestamp)) as jam_mulai, MAX(TIME(lq.timestamp)) as jam_selesai, (MAX(lq.prodCount) - MIN(lq.prodCount)) as total_qty FROM log_quality lq LEFT JOIN master_operator mo ON lq.op_NIK = mo.nik WHERE lq.mcID = '$mcID' AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai' AND lq.op_NIK != '' GROUP BY lq.op_NIK, mo.nama ORDER BY jam_mulai ASC");
         $opHistoryData = [];
-        if ($res_op_history && $res_op_history->num_rows > 0) {
-            while($rowOp = $res_op_history->fetch_assoc()) { $opHistoryData[] = $rowOp; }
+        $op_names_cache = [];
+        $res_op = $conn->query("SELECT nik, nama FROM master_operator");
+        if ($res_op) { while($o = $res_op->fetch_assoc()) { $op_names_cache[$o['nik']] = $o['nama']; } }
+        foreach ($opSessions as $ses) {
+            $opHistoryData[] = [
+                'op_NIK' => $ses['nik'],
+                'nama' => $op_names_cache[$ses['nik']] ?? 'Tidak Terdaftar',
+                'jam_mulai' => $ses['jam_mulai'],
+                'jam_selesai' => $ses['jam_selesai'],
+                'total_qty' => $ses['total_qty']
+            ];
         }
 
         echo json_encode([
@@ -114,6 +215,8 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == '1') {
 }
 
 $today_db = date('Y-m-d');
+$sample_shift = getActiveShift($conn, 'LINE 1');
+$shift_date = date('Y-m-d', strtotime($sample_shift['mulai']));
 
 // PROSES TOMBOL QUICK ACTION (LEMBUR AWAL / AKHIR)
 if(isset($_POST['set_lembur'])) {
@@ -121,16 +224,16 @@ if(isset($_POST['set_lembur'])) {
     $j_selesai = $conn->real_escape_string($_POST['jam_selesai']);
     $posisi = $conn->real_escape_string($_POST['posisi_lembur']); 
     
-    $conn->query("INSERT INTO mesin_override (mcID, tanggal, jenis, jam_mulai, jam_selesai) VALUES ('$mcID', '$today_db', '$posisi', '$j_mulai', '$j_selesai') ON DUPLICATE KEY UPDATE jenis='$posisi', jam_mulai='$j_mulai', jam_selesai='$j_selesai'");
+    $conn->query("INSERT INTO mesin_override (mcID, tanggal, jenis, jam_mulai, jam_selesai) VALUES ('$mcID', '$shift_date', '$posisi', '$j_mulai', '$j_selesai') ON DUPLICATE KEY UPDATE jenis='$posisi', jam_mulai='$j_mulai', jam_selesai='$j_selesai'");
     header("Location: detail.php?mcID=".urlencode($mcID)); exit;
 }
 if(isset($_POST['reset_override'])) {
-    $conn->query("DELETE FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$today_db'");
+    $conn->query("DELETE FROM mesin_override WHERE mcID = '$mcID' AND (tanggal = '$today_db' OR tanggal = '$shift_date')");
     header("Location: detail.php?mcID=".urlencode($mcID)); exit;
 }
 
 // CEK STATUS QUICK ACTION AKTIF
-$sql_over = "SELECT jenis, jam_mulai, jam_selesai FROM mesin_override WHERE mcID = '$mcID' AND tanggal = '$today_db'";
+$sql_over = "SELECT jenis, jam_mulai, jam_selesai FROM mesin_override WHERE mcID = '$mcID' AND (tanggal = '$today_db' OR tanggal = '$shift_date') ORDER BY id DESC LIMIT 1";
 $res_over = $conn->query($sql_over);
 $override = ($res_over && $res_over->num_rows > 0) ? $res_over->fetch_assoc() : null;
 $is_lembur = false; $jenis_lembur = "";
@@ -141,97 +244,7 @@ if($override) {
     }
 }
 
-function getLogicalDay($time = null) {
-    if ($time === null) $time = time();
-    $now = date('H:i:s', $time);
-    $day_num = date('N', $time); // 1 (Monday) to 7 (Sunday)
-    
-    // Shift 2 usually runs past midnight into the next day. 
-    // If it's before 07:00 AM, it logically belongs to the previous day's shift schedule.
-    if ($now < '07:00:00') {
-        $day_num = $day_num - 1;
-        if ($day_num == 0) $day_num = 7; // Sunday wrap
-    }
-    
-    if ($day_num >= 1 && $day_num <= 4) return 'SENIN-KAMIS';
-    if ($day_num == 5) return 'JUMAT';
-    if ($day_num == 6 || $day_num == 7) return 'SABTU-MINGGU';
-    
-    return 'SENIN-KAMIS';
-}
 
-function getActiveShift($conn, $line) {
-    $sql_setting = $conn->query("SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1");
-    $row_setting = ($sql_setting && $sql_setting->num_rows > 0) ? $sql_setting->fetch_assoc() : [];
-    $jam_reset_s1 = $row_setting['jam_reset_shift1'] ?? '16:00:00';
-    $jam_reset_s2 = $row_setting['jam_reset_shift2'] ?? '06:00:00';
-
-    $now = date('H:i:s'); 
-    $today = date('Y-m-d');
-    
-    $is_shift_1 = false;
-    if ($jam_reset_s2 <= $jam_reset_s1) {
-        if ($now >= $jam_reset_s2 && $now < $jam_reset_s1) {
-            $is_shift_1 = true;
-        }
-    } else {
-        if ($now >= $jam_reset_s2 || $now < $jam_reset_s1) {
-            $is_shift_1 = true;
-        }
-    }
-
-    $shift_aktif = $is_shift_1 ? 'SHIFT 1' : 'SHIFT 2';
-    if ($is_shift_1) {
-        $mulai = "$today $jam_reset_s2";
-        $selesai = "$today $jam_reset_s1";
-    } else {
-        if ($now >= $jam_reset_s1) {
-            $mulai = "$today $jam_reset_s1";
-            $selesai = date('Y-m-d', strtotime('+1 day')) . " $jam_reset_s2";
-        } else {
-            $mulai = date('Y-m-d', strtotime('-1 day')) . " $jam_reset_s1";
-            $selesai = "$today $jam_reset_s2";
-        }
-    }
-
-    $hari = getLogicalDay(strtotime($mulai));
-
-    $sql_tpl = "SELECT nama_template FROM master_line WHERE nama_line = '$line' LIMIT 1";
-    $res_tpl = $conn->query($sql_tpl);
-    $row_tpl = ($res_tpl && $res_tpl->num_rows > 0) ? $res_tpl->fetch_assoc() : [];
-    $template = $row_tpl['nama_template'] ?? 'DEFAULT';
-
-    $templates_to_check = array_unique([$template, 'DEFAULT']);
-    $slots = [];
-    $found_template = 'DEFAULT';
-
-    foreach ($templates_to_check as $tpl) {
-        if (empty($tpl)) continue;
-        $tpl_esc = $conn->real_escape_string($tpl);
-        $sql = "SELECT shift, rentang_jam FROM master_jam_statis WHERE nama_template = '$tpl_esc' AND shift = '$shift_aktif' AND (hari = '$hari' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
-        $res = $conn->query($sql);
-        
-        if ($res && $res->num_rows > 0) {
-            $found_template = $tpl;
-            while($r = $res->fetch_assoc()) {
-                $p = explode('-', $r['rentang_jam']);
-                if(count($p) == 2) {
-                    $slots[] = ['start' => trim($p[0]).":00", 'end' => trim($p[1]).":00"];
-                }
-            }
-            break;
-        }
-    }
-
-    return [
-        'shift' => $shift_aktif,
-        'mulai' => $mulai,
-        'selesai' => $selesai,
-        'template' => $found_template,
-        'hari' => $hari,
-        'slots' => $slots
-    ];
-}
 
 $sql_info = "SELECT lq.*, mm.nama_mesin, mm.offset_produksi, mm.mcID as string_mcID, mc.ct_jam, mc.part_name, mc.part_number, mc.proses_name, mc.proses_description, mc.ct_pcs, mc.line, mo.nama as nama_operator, mo.nik, TIMESTAMPDIFF(SECOND, lq.timestamp, NOW()) as last_update_sec, lq.timestamp as last_ts
              FROM master_mesin mm LEFT JOIN (SELECT l1.* FROM log_quality l1 INNER JOIN (SELECT mcID, MAX(id) as max_id FROM log_quality GROUP BY mcID) l2 ON l1.mcID = l2.mcID AND l1.id = l2.max_id) lq ON mm.id_mesin = lq.mcID
@@ -242,7 +255,9 @@ $sql_info = "SELECT lq.*, mm.nama_mesin, mm.offset_produksi, mm.mcID as string_m
 $res_info = $conn->query($sql_info);
 $info = ($res_info && $res_info->num_rows > 0) ? $res_info->fetch_assoc() : [];
 
-$line = $info['line'] ?? 'ALL';
+$lineInfo = getMesinLineInfo($conn, $mcID, $info['kode_proses'] ?? '');
+$line = $lineInfo['line'];
+$template_aktif = $lineInfo['template'];
 $shift_info = getActiveShift($conn, $line);
 
 $waktu_mulai = $shift_info['mulai'];
@@ -255,11 +270,18 @@ if($is_lembur) {
     $j_mulai = $override['jam_mulai'];
     $j_selesai = $override['jam_selesai'];
     
-    $lembur_start_dt = date('Y-m-d H:i:s', strtotime($today_db . ' ' . $j_mulai));
-    $lembur_end_dt = date('Y-m-d H:i:s', strtotime($today_db . ' ' . $j_selesai));
-    
-    if ($j_mulai > $j_selesai) { // Lintas Malam
-        $lembur_end_dt = date('Y-m-d H:i:s', strtotime('+1 day', strtotime($today_db . ' ' . $j_selesai)));
+    $base_date = date('Y-m-d', strtotime($waktu_mulai));
+    if ($shift_aktif == 'SHIFT 2') {
+        $s_date = ($j_mulai < '12:00:00') ? date('Y-m-d', strtotime('+1 day', strtotime($base_date))) : $base_date;
+        $e_date = ($j_selesai < '12:00:00' || $j_mulai > $j_selesai) ? date('Y-m-d', strtotime('+1 day', strtotime($base_date))) : $base_date;
+        $lembur_start_dt = "$s_date $j_mulai";
+        $lembur_end_dt = "$e_date $j_selesai";
+    } else {
+        $lembur_start_dt = date('Y-m-d H:i:s', strtotime($base_date . ' ' . $j_mulai));
+        $lembur_end_dt = date('Y-m-d H:i:s', strtotime($base_date . ' ' . $j_selesai));
+        if ($j_mulai > $j_selesai) { // Lintas Malam
+            $lembur_end_dt = date('Y-m-d H:i:s', strtotime('+1 day', strtotime($base_date . ' ' . $j_selesai)));
+        }
     }
     
     if ($lembur_start_dt < $waktu_mulai) $waktu_mulai = $lembur_start_dt;
@@ -268,7 +290,7 @@ if($is_lembur) {
     if($shift_aktif == 'OFF SHIFT') { $shift_aktif = 'LEMBUR AKTIF'; }
 }
 
-$template_aktif = $shift_info['template'];
+if (empty($template_aktif)) $template_aktif = $shift_info['template'];
 $namaMesin = $info['nama_mesin'] ?? $mcID; $partName = $info['part_name'] ?? 'Belum Ada Part'; $partNumber = $info['part_number'] ?? '-';
 $prosesName = $info['proses_name'] ?? 'PROSES 1'; $prosesDesc = $info['proses_description'] ?? '-'; $ctPcs = $info['ct_pcs'] ?? 0; $targetPerJam = isset($info['ct_jam']) && $info['ct_jam'] > 0 ? round($info['ct_jam']) : 0;
 $operatorName = $info['nama_operator'] ?? ($info['op_NIK'] ?? 'Belum Login'); $nikOP = $info['nik'] ?? ($info['op_NIK'] ?? 'default');
@@ -298,7 +320,7 @@ $opSkillLabel = $opSkillInfo['label'];
 $opSkillColor = $opSkillInfo['color'];
 
 $mcStatus = strtolower($info['mcStatus'] ?? 'off'); $infoAsli = trim($info['mcInfo'] ?? 'Off');
-$isTimeout = ($info['last_update_sec'] === null || $info['last_update_sec'] > 180);
+$isTimeout = (!isset($info['last_update_sec']) || $info['last_update_sec'] === null || $info['last_update_sec'] > 180);
 
         $kuning = ['Toilet', 'Minum', 'Sholat', 'Operator Izin']; 
         $oren = ['Dandory', 'Refill Material', '5P/5S', 'PSM', 'Teaching', 'OJT', 'Tambahan Proses', 'Wire Las Macet', 'Nozzle / Contac Tip']; 
@@ -318,15 +340,11 @@ $isTimeout = ($info['last_update_sec'] === null || $info['last_update_sec'] > 18
         }
 
 $offset_produksi = (int)($info['offset_produksi'] ?? 0);
-$sql_prod = "SELECT COALESCE(MAX(prodCount), 0) as max_prod FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
-$max_prod = ($conn->query($sql_prod)->fetch_assoc()['max_prod']) ?? 0;
+$sql_prod = "SELECT COALESCE(SUM(delta_prodCount), 0) as total_prod FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
+$res_prod = $conn->query($sql_prod);
+$prod_delta = ($res_prod && $res_prod->num_rows > 0) ? (int)$res_prod->fetch_assoc()['total_prod'] : 0;
+$totalProd = $offset_produksi + $prod_delta;
 
-$totalProd = $max_prod - $offset_produksi;
-if ($totalProd < 0) {
-    // Failsafe jika ESP32 restart
-    $sql_fallback = "SELECT COALESCE(MAX(prodCount) - MIN(prodCount), 0) as fallback_prod FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
-    $totalProd = ($conn->query($sql_fallback)->fetch_assoc()['fallback_prod']) ?? 0;
-}
 
 $res_ng = $conn->query("SELECT COALESCE(SUM(CASE WHEN qty_ng > 0 THEN qty_ng ELSE 0 END), 0) as total_ng_plus, COALESCE(SUM(CASE WHEN qty_ng < 0 THEN ABS(qty_ng) ELSE 0 END), 0) as total_repair FROM log_ng WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'");
 if ($res_ng && $res_ng->num_rows > 0) {
@@ -346,88 +364,95 @@ $template_esc = $conn->real_escape_string($template_aktif);
 $shift_esc = $conn->real_escape_string($shift_target);
 $hari_esc = $conn->real_escape_string($hari_aktif);
 
-$sql_jam_statis = "SELECT rentang_jam, menit_efektif FROM master_jam_statis WHERE nama_template = '$template_esc' AND shift = '$shift_esc' AND (hari = '$hari_esc' OR hari = 'SETIAP HARI') ORDER BY urutan ASC";
-$res_jam_statis = $conn->query($sql_jam_statis);
-$jamAktif = []; $hourlyActualSum = []; $hourlyTargetSum = []; $jamEfektif = [];
+$jamEfektif = getJadwalStatisSlots($conn, $template_aktif, $shift_target, $hari_aktif);
+$jamAktif = array_keys($jamEfektif);
+$hourlyActualSum = []; $hourlyTargetSum = [];
+foreach ($jamAktif as $j) { $hourlyActualSum[$j] = 0; $hourlyTargetSum[$j] = 0; }
 
 // Helper function to check if a time falls within a range (handles cross-midnight)
-function isTimeInRange($time, $range) {
-    $p = explode('-', $range);
-    if(count($p) !== 2) return false;
-    $start = trim($p[0]) . ":00";
-    $end = trim($p[1]) . ":00";
-    if ($start <= $end) {
-        return ($time >= $start && $time <= $end);
-    } else {
-        return ($time >= $start || $time <= $end);
+if (!function_exists('isTimeInRange')) {
+    function isTimeInRange($time, $range) {
+        $p = explode('-', $range);
+        if(count($p) !== 2) return false;
+        $start = trim($p[0]) . ":00";
+        $end = trim($p[1]) . ":00";
+        if ($start <= $end) {
+            return ($time >= $start && $time <= $end);
+        } else {
+            return ($time >= $start || $time <= $end);
+        }
     }
 }
 
 // --- SMART STANDBY LOGIC ---
-function isTargetMetAtTime($time_to_check, $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget) {
-    $matched_jam = null;
-    if ($is_lembur && $time_to_check >= $lembur_start_dt && $time_to_check <= $lembur_end_dt) {
-        $matched_jam = $jam_lembur_str;
-    } else {
-        $logTime = date('H:i:s', strtotime($time_to_check));
-        foreach($jamAktif as $jam) {
-            if ($jam == $jam_lembur_str) continue;
-            if (isTimeInRange($logTime, $jam)) {
-                $matched_jam = $jam;
-                break;
+if (!function_exists('isTargetMetAtTime')) {
+    function isTargetMetAtTime($time_to_check, $jamAktif, $lembur_start_dt, $lembur_end_dt, $jam_lembur_str, $is_lembur, $hourlyActualSum, $hourlyCalculatedTarget) {
+        $matched_jam = null;
+        if ($is_lembur && $time_to_check >= $lembur_start_dt && $time_to_check <= $lembur_end_dt) {
+            $matched_jam = $jam_lembur_str;
+        } else {
+            $logTime = date('H:i:s', strtotime($time_to_check));
+            foreach($jamAktif as $jam) {
+                if ($jam == $jam_lembur_str) continue;
+                if (isTimeInRange($logTime, $jam)) {
+                    $matched_jam = $jam;
+                    break;
+                }
             }
         }
-    }
-    if ($matched_jam && isset($hourlyActualSum[$matched_jam]) && isset($hourlyCalculatedTarget[$matched_jam])) {
-        // Jika target > 0 dan aktual >= target, maka target tercapai
-        if ($hourlyCalculatedTarget[$matched_jam] > 0 && $hourlyActualSum[$matched_jam] >= $hourlyCalculatedTarget[$matched_jam]) {
-            return true;
+        if ($matched_jam && isset($hourlyActualSum[$matched_jam]) && isset($hourlyCalculatedTarget[$matched_jam])) {
+            if ($hourlyCalculatedTarget[$matched_jam] > 0 && $hourlyActualSum[$matched_jam] >= $hourlyCalculatedTarget[$matched_jam]) {
+                return true;
+            }
         }
+        return false;
     }
-    return false;
 }
 
 
-// 1. Hitung Downtime Historis - PROPORTIONAL SMART BREAK
-$completed_downtime_sec = 0;
-$pareto_map = [];
-$whitelist_pareto_map = [];
-
-$forgiven_labels = ['Stand By', 'Mesin Off', 'Toilet', 'Minum', 'Sholat'];
+// 1. Hitung Downtime Historis - STANDAR INTERNASIONAL ISO 22400-2 & TPM
 $historical_real_dt = 0;
-$historical_whitelist_dt = 0;
+$pareto_map = [];
+$tpm_summary_map = [];
 
-// Ambil semua row downtime
-$res_dt_all = $conn->query("SELECT ld.timestamp, ld.kode_dt, ld.durasi_detik, md.label_dt FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
+$res_dt_all = $conn->query("SELECT ld.timestamp, ld.kode_dt, ld.durasi_detik, md.label_dt 
+                            FROM log_downtime ld 
+                            LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt 
+                            WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
 if ($res_dt_all && $res_dt_all->num_rows > 0) {
+    $shift_start_ts = strtotime($shift_info['work_start'] ?? $waktu_mulai);
+    $shift_end_ts = strtotime($shift_info['work_end'] ?? $waktu_selesai);
+
     while ($dt_row = $res_dt_all->fetch_assoc()) {
         $dt_kode = strtoupper($dt_row['kode_dt']);
         $dt_label_master = $dt_row['label_dt'];
         $dt_dur = (int)$dt_row['durasi_detik'];
         
-        $label = ($dt_kode == 'SB' || $dt_kode == 'STAND BY') ? 'Stand By' : ($dt_kode == 'MESIN OFF' ? 'Mesin Off' : ($dt_label_master ? $dt_label_master : $dt_kode));
+        $label = ($dt_kode == 'SB' || $dt_kode == 'STAND BY') ? 'Stand By' : ($dt_kode == 'MESIN OFF' ? 'Mesin Off' : ($dt_label_master ? $dt_label_master : $dt_row['kode_dt']));
         
-        if (in_array($label, $forgiven_labels)) {
-            $historical_whitelist_dt += $dt_dur;
-            $whitelist_pareto_map[$label] = ($whitelist_pareto_map[$label] ?? 0) + $dt_dur;
-        } else {
-            $historical_real_dt += $dt_dur;
-            $pareto_map[$label] = ($pareto_map[$label] ?? 0) + $dt_dur;
+        // Waktu mulai & selesai downtime
+        $end_ts = strtotime($dt_row['timestamp']);
+        $start_ts = $end_ts - $dt_dur;
+        
+        // Time clipping: Hanya hitung durasi yang berada di dalam jam shift aktif
+        $clipped_dur = clipIntervalToShift($start_ts, $end_ts, $shift_start_ts, $shift_end_ts);
+        if ($clipped_dur > 0) {
+            $historical_real_dt += $clipped_dur;
+            $pareto_map[$label] = ($pareto_map[$label] ?? 0) + $clipped_dur;
+            
+            $catInfo = classifyDowntimeCategory($label);
+            $catLabel = $catInfo['category_label'];
+            $tpm_summary_map[$catLabel] = ($tpm_summary_map[$catLabel] ?? 0) + $clipped_dur;
         }
     }
 }
 
-// 2. Hitung Downtime Aktif (Sedang Berjalan) - PROPORTIONAL SMART BREAK
+// 2. Hitung Downtime Aktif (Sedang Berjalan) - STANDAR ISO 22400-2 & TPM
 $ongoing_downtime_sec = 0;
 $ongoing_dt_label = null;
-$ongoing_real_dt = 0;
-$ongoing_whitelist_dt = 0;
 
 if ($statusTeks != 'RUNNING') {
-    if (strcasecmp($infoAsli, 'Mesin Running') == 0 || strcasecmp($infoAsli, 'Running') == 0) {
-        $ongoing_downtime_sec = 0;
-        $ongoing_dt_label = null;
-    } else {
+    if (strcasecmp($infoAsli, 'Mesin Running') != 0 && strcasecmp($infoAsli, 'Running') != 0) {
         $infoEsc = $conn->real_escape_string($infoAsli);
         $end_time_expr = ($isTimeout && isset($info['last_ts'])) ? "'{$info['last_ts']}'" : "NOW()";
         
@@ -440,11 +465,7 @@ if ($statusTeks != 'RUNNING') {
         } else {
             $sql_first = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo = '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC LIMIT 1";
             $res_first = $conn->query($sql_first);
-            if ($res_first && $res_first->num_rows > 0) {
-                $downtime_start_ts = $res_first->fetch_assoc()['timestamp'];
-            } else {
-                $downtime_start_ts = $waktu_mulai;
-            }
+            $downtime_start_ts = ($res_first && $res_first->num_rows > 0) ? $res_first->fetch_assoc()['timestamp'] : $waktu_mulai;
         }
         
         if ($downtime_start_ts) {
@@ -453,72 +474,44 @@ if ($statusTeks != 'RUNNING') {
             if ($res_ongoing && $res_ongoing->num_rows > 0) {
                 $raw_ongoing = max(0, (int)$res_ongoing->fetch_assoc()['active_sec']);
                 
-                $ongoing_dt_label = $infoAsli;
-                $sql_dt_label = "SELECT kode_dt, label_dt FROM master_downtime WHERE kode_dt = '$infoEsc' OR label_dt = '$infoEsc' LIMIT 1";
-                $res_dt_label = $conn->query($sql_dt_label);
-                if ($res_dt_label && $res_dt_label->num_rows > 0) {
-                    $dt_row = $res_dt_label->fetch_assoc();
-                    $ongoing_dt_label = $dt_row['label_dt'];
-                } else {
-                    if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
-                        $ongoing_dt_label = 'Stand By';
-                    } else if (strtoupper($infoAsli) == 'MESIN OFF') {
-                        $ongoing_dt_label = 'Mesin Off';
-                    }
-                }
+                // Time clipping terhadap jam shift aktif
+                $shift_start_ts = strtotime($shift_info['work_start'] ?? $waktu_mulai);
+                $shift_end_ts = strtotime($shift_info['work_end'] ?? $waktu_selesai);
+                $end_ts_ongoing = min(time(), $shift_end_ts);
+                $ongoing_clipped = clipIntervalToShift(strtotime($downtime_start_ts), $end_ts_ongoing, $shift_start_ts, $shift_end_ts);
                 
-                if (in_array($ongoing_dt_label, $forgiven_labels)) {
-                    $ongoing_whitelist_dt += $raw_ongoing;
-                    $whitelist_pareto_map[$ongoing_dt_label] = ($whitelist_pareto_map[$ongoing_dt_label] ?? 0) + $raw_ongoing;
-                } else {
-                    $ongoing_real_dt += $raw_ongoing;
-                    $pareto_map[$ongoing_dt_label] = ($pareto_map[$ongoing_dt_label] ?? 0) + $raw_ongoing;
+                if ($ongoing_clipped > 0) {
+                    $ongoing_dt_label = $infoAsli;
+                    $sql_dt_label = "SELECT label_dt FROM master_downtime WHERE kode_dt = '$infoEsc' OR label_dt = '$infoEsc' LIMIT 1";
+                    $res_dt_label = $conn->query($sql_dt_label);
+                    if ($res_dt_label && $res_dt_label->num_rows > 0) {
+                        $ongoing_dt_label = $res_dt_label->fetch_assoc()['label_dt'];
+                    } else {
+                        if (strtoupper($infoAsli) == 'STAND BY' || strtoupper($infoAsli) == 'SB') {
+                            $ongoing_dt_label = 'Stand By';
+                        } else if (strtoupper($infoAsli) == 'MESIN OFF') {
+                            $ongoing_dt_label = 'Mesin Off';
+                        }
+                    }
+                    
+                    $ongoing_downtime_sec = $ongoing_clipped;
+                    $pareto_map[$ongoing_dt_label] = ($pareto_map[$ongoing_dt_label] ?? 0) + $ongoing_clipped;
+                    
+                    $catInfo = classifyDowntimeCategory($ongoing_dt_label);
+                    $catLabel = $catInfo['category_label'];
+                    $tpm_summary_map[$catLabel] = ($tpm_summary_map[$catLabel] ?? 0) + $ongoing_clipped;
                 }
             }
         }
     }
 }
 
-// 3. Terapkan Proportional Smart Break
-$current_ts = time();
-$ppt_seconds = 0;
-foreach($jamAktif as $jam) {
-    $eff_min = $jamEfektif[$jam] ?? 0;
-    if ($eff_min > 0) {
-        $p = explode('-', $jam);
-        if(count($p) == 2) {
-            $s_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[0]) . ':00');
-            $e_time = strtotime(date('Y-m-d', strtotime($waktu_mulai)) . ' ' . trim($p[1]) . ':00');
-            if ($e_time < $s_time) $e_time += 86400;
-            if ($s_time < strtotime($waktu_mulai)) { $s_time += 86400; $e_time += 86400; }
-            
-            $slot_dur = $e_time - $s_time;
-            if ($current_ts > $s_time) {
-                $elapsed = min($current_ts, $e_time) - $s_time;
-                if ($slot_dur > 0) {
-                    $ppt_seconds += ($elapsed / $slot_dur) * ($eff_min * 60);
-                }
-            }
-        }
-    }
-}
+// 3. Kalkulasi Total Losstime Real Murni (Bebas Manipulasi Whitelist)
+$total_real_dt = $historical_real_dt + $ongoing_downtime_sec;
+$totalLosstimeMenit = round($total_real_dt / 60);
 
-$total_real_dt = $historical_real_dt + $ongoing_real_dt;
-$total_whitelist_dt = $historical_whitelist_dt + $ongoing_whitelist_dt;
-
-$ideal_time_sec = $totalProd * $ctPcs;
-$allowed_whitelist_sec = max(0, $ppt_seconds - $ideal_time_sec - $total_real_dt);
-$final_whitelist_dt = min($total_whitelist_dt, $allowed_whitelist_sec);
-
-// Proporsikan whitelist pareto map
-if ($total_whitelist_dt > 0 && $final_whitelist_dt > 0) {
-    $scale_factor = $final_whitelist_dt / $total_whitelist_dt;
-    foreach ($whitelist_pareto_map as $wl_label => $wl_dur) {
-        $pareto_map[$wl_label] = ($pareto_map[$wl_label] ?? 0) + round($wl_dur * $scale_factor);
-    }
-}
-
-$totalLosstimeMenit = round(($total_real_dt + $final_whitelist_dt) / 60);
+// 4. Hitung Planned Production Time (PPT) Sesuai Standar ISO 22400-2
+$ppt_seconds = calculateShiftPPTSeconds($conn, $template_aktif, $shift_target, $hari_aktif, $waktu_mulai, time());
 $res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, mc.part_name as log_part_name, mc.part_number as log_part_number, mc.proses_description as log_proses_desc, COALESCE(SUM(CASE WHEN ln.qty_ng > 0 THEN ln.qty_ng ELSE 0 END), 0) as qty_ng_plus, COALESCE(SUM(CASE WHEN ln.qty_ng < 0 THEN ABS(ln.qty_ng) ELSE 0 END), 0) as qty_repair, COALESCE(SUM(ln.qty_ng), 0) as net_scrap FROM log_ng ln LEFT JOIN master_defect md ON ln.kode_ng = md.kode_defect LEFT JOIN master_ct mc ON ln.kode_proses = mc.kode WHERE ln.mcID = '$mcID' AND ln.timestamp >= '$waktu_mulai' AND ln.timestamp <= '$waktu_selesai' GROUP BY ln.kode_proses, ln.kode_ng, md.keterangan, mc.part_name, mc.part_number, mc.proses_description");
 $res_logs_op = $conn->query("SELECT timestamp, op_NIK, prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC, id ASC");
 $opSessions = [];
@@ -563,39 +556,40 @@ foreach ($opSessions as $ses) {
 }
 
 
-function getDurationHours($rangeStr) {
-    $p = explode('-', $rangeStr);
-    if(count($p) !== 2) return 1;
-    $start = strtotime(trim($p[0]) . ":00");
-    $end = strtotime(trim($p[1]) . ":00");
-    if ($start === false || $end === false) return 1;
-    if ($end < $start) $end += 86400; // Cross midnight
-    return ($end - $start) / 3600;
+if (!function_exists('getDurationHours')) {
+    function getDurationHours($rangeStr) {
+        $p = explode('-', $rangeStr);
+        if(count($p) !== 2) return 1;
+        $start = strtotime(trim($p[0]) . ":00");
+        $end = strtotime(trim($p[1]) . ":00");
+        if ($start === false || $end === false) return 1;
+        if ($end < $start) $end += 86400; // Cross midnight
+        return ($end - $start) / 3600;
+    }
 }
 
-function isBucketStarted($rangeStr, $waktu_mulai) {
-    $p = explode('-', $rangeStr);
-    if(count($p) !== 2) return true;
-    
-    $start_time_str = trim($p[0]) . ":00";
-    $shift_start_time = date('H:i:s', strtotime($waktu_mulai));
-    $bucket_date = date('Y-m-d', strtotime($waktu_mulai));
-    
-    if ($start_time_str < $shift_start_time) {
-        $bucket_date = date('Y-m-d', strtotime($waktu_mulai . ' +1 day'));
+if (!function_exists('isBucketStarted')) {
+    function isBucketStarted($rangeStr, $waktu_mulai) {
+        $p = explode('-', $rangeStr);
+        if(count($p) !== 2) return true;
+        
+        $start_time_str = trim($p[0]) . ":00";
+        $shift_start_time = date('H:i:s', strtotime($waktu_mulai));
+        $bucket_date = date('Y-m-d', strtotime($waktu_mulai));
+        
+        if ($start_time_str < $shift_start_time) {
+            $bucket_date = date('Y-m-d', strtotime($waktu_mulai . ' +1 day'));
+        }
+        
+        $bucket_start_dt = strtotime($bucket_date . ' ' . $start_time_str);
+        return time() >= $bucket_start_dt;
     }
-    
-    $bucket_start_dt = strtotime($bucket_date . ' ' . $start_time_str);
-    return time() >= $bucket_start_dt;
 }
 
-if ($res_jam_statis && $res_jam_statis->num_rows > 0) {
-    while($rowJ = $res_jam_statis->fetch_assoc()) { 
-        $jamAktif[] = $rowJ['rentang_jam']; 
-        $jamEfektif[$rowJ['rentang_jam']] = (int)$rowJ['menit_efektif'];
-        $hourlyActualSum[$rowJ['rentang_jam']] = 0; 
-        $hourlyTargetSum[$rowJ['rentang_jam']] = 0; 
-    }
+if (empty($jamAktif)) {
+    $jamEfektif = getJadwalStatisSlots($conn, $template_aktif, $shift_target, $hari_aktif);
+    $jamAktif = array_keys($jamEfektif);
+    foreach ($jamAktif as $j) { $hourlyActualSum[$j] = 0; $hourlyTargetSum[$j] = 0; }
 }
 
 $jam_lembur_str = "";
@@ -628,7 +622,15 @@ foreach($jamAktif as $jam) {
 }
 
 $true_total_prod = 0;
-$prev_prodCount = $offset_produksi;
+$prev_prodCount = 0;
+$prev_log_timestamp = null; // Untuk spike detection
+
+// Ambil baseline counter terakhir sebelum shift dimulai (mencegah lonjakan saat pergantian shift)
+$sql_baseline = "SELECT prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp < '$waktu_mulai' ORDER BY timestamp DESC, id DESC LIMIT 1";
+$res_baseline = $conn->query($sql_baseline);
+if ($res_baseline && $res_baseline->num_rows > 0) {
+    $prev_prodCount = (int)$res_baseline->fetch_assoc()['prodCount'];
+}
 
 if ($res_logs && $res_logs->num_rows > 0) {
     while($row = $res_logs->fetch_assoc()) {
@@ -644,11 +646,28 @@ if ($res_logs && $res_logs->num_rows > 0) {
             // ESP32 Ter-Reset!
             $qty_added = $curr_prodCount; 
         }
-        $true_total_prod += $qty_added;
+        
+        $curr_log_ts = strtotime($row['timestamp']);
+        
+        // ======== PHYSICAL CAPPING & ANTI-RECONNECT SPIKE ========
+        $curr_ct = !empty($row['ct_pcs']) ? (float)$row['ct_pcs'] : (float)$ctPcs;
+        $phys_cap = getPhysicalHourlyCapacity($curr_ct);
+        $max_allowed_delta = (int)round($phys_cap * 1.25);
+        
+        if ($qty_added > $max_allowed_delta && $prev_log_timestamp !== null) {
+            $time_gap_seconds = $curr_log_ts - $prev_log_timestamp;
+            if ($time_gap_seconds > 900) { // Gap > 15 menit (server offline/reconnect)
+                // Capping ke kapasitas fisik, sinkronkan baseline counter
+                $qty_added = min($qty_added, $phys_cap);
+                $prev_prodCount = $curr_prodCount;
+                $prev_log_timestamp = $curr_log_ts;
+            }
+        }
+        $prev_log_timestamp = $curr_log_ts;
         $prev_prodCount = $curr_prodCount;
 
         if ($qty_added == 0) {
-            continue; // OPTIMASI: Lompati bucketing yang memakan CPU time jika tidak ada penambahan qty
+            continue;
         }
 
         $matched_jam = null;
@@ -656,7 +675,7 @@ if ($res_logs && $res_logs->num_rows > 0) {
             $matched_jam = $jam_lembur_str;
         } else {
             foreach($jamAktif as $jam) {
-                if ($jam == $jam_lembur_str) continue; // Skip lembur string if not matched above
+                if ($jam == $jam_lembur_str) continue;
                 if (isTimeInRange($logTime, $jam)) {
                     $matched_jam = $jam;
                     break;
@@ -664,62 +683,10 @@ if ($res_logs && $res_logs->num_rows > 0) {
             }
         }
         
-        // JIKA DILUAR TEMPLATE DAN BUKAN QUICK ACTION, AUTO-GENERATE JAM LEMBUR
+        // STRICT SHIFT BOUNDARY: Hanya masukkan data ke slot resmi shift aktif
+        // Abaikan data di luar rentang shift resmi (mencegah grafik melar tanpa batas)
         if (!$matched_jam) {
-            $last_end = null;
-            if (!empty($jamAktif)) {
-                $last_bucket = end($jamAktif);
-                if ($last_bucket == $jam_lembur_str && count($jamAktif) > 1) {
-                    $last_bucket = $jamAktif[count($jamAktif)-2]; // Ambil sebelum lembur quick action
-                }
-                $p = explode('-', $last_bucket);
-                if (count($p) == 2) $last_end = trim($p[1]);
-            }
-            
-            if ($last_end) {
-                // Generate sequential buckets until we find the one containing logTime
-                $s_time = strtotime($last_end . ":00");
-                $log_ts_check = strtotime($logTime);
-                if ($log_ts_check < $s_time) {
-                    $log_ts_check += 86400; // cross midnight fix untuk perbandingan
-                }
-                
-                $loops = 0;
-                while($loops < 10) {
-                    $e_time = strtotime("+1 hour", $s_time);
-                    $start = date('H:i', $s_time);
-                    $end = date('H:i', $e_time);
-                    $new_bucket = "$start - $end";
-                    
-                    if (!in_array($new_bucket, $jamAktif)) {
-                        $jamAktif[] = $new_bucket;
-                        $hourlyActualSum[$new_bucket] = 0;
-                        $hourlyTargetSum[$new_bucket] = 0;
-                        if (isset($jamEfektif)) $jamEfektif[$new_bucket] = 60; // 60 menit efektif
-                    }
-                    
-                    if (isTimeInRange($logTime, $new_bucket)) {
-                        $matched_jam = $new_bucket;
-                        break;
-                    }
-                    $s_time = $e_time;
-                    $loops++;
-                }
-            }
-            
-            if (!$matched_jam) {
-                $hour = (int)date('H', strtotime($logTime));
-                $start = str_pad($hour, 2, '0', STR_PAD_LEFT).":00";
-                $end = str_pad($hour+1, 2, '0', STR_PAD_LEFT).":00";
-                if($hour == 23) $end = "23:59";
-                $matched_jam = "$start - $end";
-                if (!in_array($matched_jam, $jamAktif)) {
-                    $jamAktif[] = $matched_jam;
-                    $hourlyActualSum[$matched_jam] = 0;
-                    $hourlyTargetSum[$matched_jam] = 0;
-                    if (isset($jamEfektif)) $jamEfektif[$matched_jam] = 60;
-                }
-            }
+            continue;
         }
         
         $pn = !empty($row['part_number']) ? $row['part_number'] : $partNumber; 
@@ -729,20 +696,21 @@ if ($res_logs && $res_logs->num_rows > 0) {
         $target = !empty($row['ct_jam']) ? round($row['ct_jam']) : $targetPerJam;
         $key = $pn . '|' . $proses;
 
-        if ($matched_jam) {
-            if (!isset($buckets[$matched_jam][$key])) {
-                $buckets[$matched_jam][$key] = [
-                    'qty' => 0,
-                    'part_name' => $pName, 'part_number' => $pn, 'proses' => $proses, 'ct' => $ct, 'ct_jam' => $target
-                ];
-            }
-            $buckets[$matched_jam][$key]['qty'] += $qty_added;
+        if (!isset($buckets[$matched_jam][$key])) {
+            $buckets[$matched_jam][$key] = [
+                'qty' => 0,
+                'part_name' => $pName, 'part_number' => $pn, 'proses' => $proses, 'ct' => $ct, 'ct_jam' => $target
+            ];
         }
+        $buckets[$matched_jam][$key]['qty'] += $qty_added;
+        $true_total_prod += $qty_added;
     }
 }
 
 // Tumpuk totalProd dengan perhitungan delta sesungguhnya (agar tahan reset ESP32)
-$totalProd = $true_total_prod;
+if ($true_total_prod > 0) {
+    $totalProd = $true_total_prod;
+}
 $totalOK = max(0, $totalProd - $totalScrap);
 
 // 2. COMPILE BUCKETS KE DALAM TABLE DATA
@@ -832,22 +800,28 @@ if (empty($tableData)) {
     }
 }
 
+// UNIFIKASI SINGLE SOURCE OF TRUTH (SSOT)
+$true_total_prod = array_sum($hourlyActualSum ?? []);
+$totalProd = $true_total_prod;
+$totalOK = max(0, $totalProd - $totalScrap);
 
+// Kalkulasi OEE Standar Internasional ISO 22400-2
+$standardOEE = calculateStandardOEE($ppt_seconds, $total_real_dt, $totalProd, $totalScrap, $ctPcs);
+$availabilityVal = $standardOEE['availability'];
+$performanceVal = $standardOEE['performance'];
+$qualityVal = $standardOEE['quality'];
+$oeeVal = $standardOEE['oee'];
 
-
-// Inject ongoing downtime to Pareto array
-if ($ongoing_downtime_sec > 0 && $ongoing_dt_label) {
-    if (isset($pareto_map[$ongoing_dt_label])) {
-        $pareto_map[$ongoing_dt_label] += $ongoing_downtime_sec;
-    } else {
-        $pareto_map[$ongoing_dt_label] = $ongoing_downtime_sec;
-    }
-}
-
-// Sort descending
+// Sort descending untuk Pareto Chart
 arsort($pareto_map);
 $paretoLabels = array_keys($pareto_map); 
 $paretoValues = array_values($pareto_map);
+$paretoMinutes = array_map(function($v) { return max(1, round($v / 60)); }, $paretoValues);
+$paretoColors = [];
+foreach ($paretoLabels as $lbl) {
+    $cat = classifyDowntimeCategory($lbl);
+    $paretoColors[] = $cat['color'];
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -875,8 +849,9 @@ $paretoValues = array_values($pareto_map);
         .sidebar-menu a:hover, .sidebar-menu a.active { background: #2a2a2a; color: #00bfa5; border-left: 4px solid #00bfa5; padding-left: 30px;}
         .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid var(--border-color); padding-bottom: 15px; margin-bottom: 20px; flex-wrap: wrap;}
         .header-left { display: flex; align-items: center; gap: 15px; }
-        .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; }
-        .btn-back { background: #475569; color: white; padding: 10px 15px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 13px; }
+        .menu-btn { background: none; border: none; color: white; font-size: 26px; cursor: pointer; display: flex; align-items: center; }
+        .btn-back { background: #334155; border: 1px solid var(--border-color); color: white; padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 13px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); display: inline-flex; align-items: center; gap: 6px; }
+        .btn-back:hover { background: var(--primary); color: #000; border-color: var(--primary); transform: translateX(-2px); }
         
         .btn-action { padding: 10px 15px; border: none; border-radius: 5px; font-weight: bold; font-size: 13px; cursor: pointer; transition: 0.2s; color: white; width: 100%;}
         .btn-lembur { background: #1e3a8a; border: 1px solid #3b82f6; } .btn-lembur:hover { background: #2563eb; }
@@ -931,6 +906,7 @@ $paretoValues = array_values($pareto_map);
             <?php if(isset($user_role) && $user_role === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
@@ -940,13 +916,16 @@ $paretoValues = array_values($pareto_map);
                 <a href="<?= BASE_URL ?>admin/data_operator.php">👤 Data Operator</a>
                 <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
             <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
+            <?php endif; ?>
         </div>
     </div>
 
     <div class="header">
         <div class="header-left">
             <button class="menu-btn" onclick="toggleSidebar()">☰</button>
-            <a href="javascript:history.back()" class="btn-back">← Kembali</a>
+            <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Kembali</a>
         </div>
         <div style="text-align:center; flex-grow:1;">
             <h2 style="margin:0;">📊 Detail: <?= htmlspecialchars($mcID) ?> 
@@ -1028,6 +1007,12 @@ $paretoValues = array_values($pareto_map);
                 <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">TOTAL NG</div><div class="summary-val" style="color:#ff1744;"><?= $totalNG ?> <span style="font-size:14px;">Pcs</span></div></div>
                 <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">TOTAL REPAIR</div><div class="summary-val" style="color:#ffeb3b;"><?= $totalRepair ?> <span style="font-size:14px;">Pcs</span></div></div>
                 <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">TOTAL AKUMULASI SCRAP</div><div class="summary-val" style="color:#ff1744;"><?= $totalScrap ?> <span style="font-size:14px;">Pcs</span></div></div>
+            </div>
+            <div class="summary-metrics" style="margin-top: 15px; border-top: 1px dashed var(--border-color); padding-top: 15px;">
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">AVAILABILITY (A)</div><div class="summary-val" style="color:#38bdf8;"><?= $availabilityVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">PERFORMANCE (P)</div><div class="summary-val" style="color:#a78bfa;"><?= $performanceVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">QUALITY (Q)</div><div class="summary-val" style="color:#34d399;"><?= $qualityVal ?>%</div></div>
+                <div class="summary-box"><div style="font-size:12px; color:var(--text-muted); font-weight:bold;">OEE STANDAR (ISO)</div><div class="summary-val" style="color:<?= $oeeVal >= 85 ? '#00e676' : ($oeeVal >= 75 ? '#ffea00' : '#ff1744') ?>; font-weight:900;"><?= $oeeVal ?>%</div></div>
             </div>
         </div>
     </div>
@@ -1198,8 +1183,36 @@ $paretoValues = array_values($pareto_map);
         setInterval(updateClock, 1000); updateClock();
 
         const paretoCtx = document.getElementById('paretoChart').getContext('2d');
-        const dtLabels = <?= json_encode(!empty($paretoLabels) ? $paretoLabels : ['No Downtime']) ?>; const dtData = <?= json_encode(!empty($paretoValues) ? $paretoValues : [0]) ?>;
-        new Chart(paretoCtx, { type: 'doughnut', data: { labels: dtLabels, datasets: [{ data: dtData, backgroundColor: dtLabels.map(l => stringToColor(l)), borderWidth: 0, cutout: '70%' }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#ffffff' } }, datalabels: { display: false } } } });
+        const dtLabels = <?= json_encode(!empty($paretoLabels) ? $paretoLabels : ['No Downtime']) ?>;
+        const dtData = <?= json_encode(!empty($paretoMinutes) ? $paretoMinutes : [0]) ?>;
+        const dtColors = <?= json_encode(!empty($paretoColors) ? $paretoColors : ['#00bfa5']) ?>;
+        new Chart(paretoCtx, { 
+            type: 'doughnut', 
+            data: { 
+                labels: dtLabels, 
+                datasets: [{ 
+                    data: dtData, 
+                    backgroundColor: dtColors, 
+                    borderWidth: 0, 
+                    cutout: '70%' 
+                }] 
+            }, 
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false, 
+                plugins: { 
+                    legend: { position: 'bottom', labels: { color: '#ffffff' } },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return ` ${context.label}: ${context.parsed} Menit`;
+                            }
+                        }
+                    },
+                    datalabels: { display: false } 
+                } 
+            } 
+        });
 
         const dekidakaCtx = document.getElementById('dekidakaChart').getContext('2d');
         new Chart(dekidakaCtx, { type: 'bar', data: { labels: <?= json_encode(!empty($jamAktif) ? $jamAktif : ['Belum Ada Setting Jam']) ?>, datasets: [ { label: 'Actual', data: <?= json_encode(!empty($hourlyActualSum) ? array_values($hourlyActualSum) : [0]) ?>, backgroundColor: '#00bfa5', borderRadius: 2 }, { label: 'Target', data: <?= json_encode(!empty($hourlyTargetSum) ? array_values($hourlyTargetSum) : [0]) ?>, backgroundColor: '#ff1744', borderRadius: 2 } ] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#ffffff' } }, datalabels: { display: false } }, scales: { y: { grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }, x: { grid: { display: false }, ticks: { color: '#fff' } } } } });

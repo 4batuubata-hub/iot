@@ -13,7 +13,7 @@
  *    - RTC DS3231 I2C
  *    - Arduino Nano (I2C Slave Address 8, Counter)
  *    - 25 Tombol Downtime Fisik
- *    - Interlock Relay (Pin A13)
+ *    - Interlock Relay (Pin A9)
  *
  *  MQTT Topics:
  *    PUB -> SMMS/Request/Setup, SMMS/Request/Login,
@@ -77,6 +77,9 @@ char timestamp[30]; // Buffer timestamp format ISO
 #define EEPROM_DISPLAY_ID_ADDR 40 // Alamat simpan nama tampilan mesin
 #define EEPROM_INIT_FLAG 0      // Alamat flag inisialisasi
 
+#define EEPROM_DATA_START 550   // Alamat awal penyimpanan data produksi & downtime
+unsigned long lastEEPROMSave = 0; // Waktu terakhir penyimpanan EEPROM
+
 // Arduino Nano I2C Slave (Counter produksi)
 #define NANO_I2C_ADDR    8      // Alamat I2C Arduino Nano
 
@@ -91,7 +94,7 @@ char timestamp[30]; // Buffer timestamp format ISO
 #define alarmPin     A2    // Input: Alarm mesin (HIGH = Alarm aktif)
 
 // --- Output Interlock ---
-#define interlockPin A9    // OUTPUT: Relay Interlock Mesin (HIGH = Kunci/Stop)
+#define interlockPin A9   // OUTPUT: Relay Interlock Mesin (HIGH = Kunci/Stop)
 
 // --- Tombol Navigasi (Biru pada panel) ---
 #define btnCTRL      30    // Tombol CTRL (kombinasi untuk setup/reconnect)
@@ -200,10 +203,10 @@ String previousMcStatus = "off";       // Status sebelumnya (untuk deteksi trans
 String previousMcInfo   = "Stand By";  // Info sebelumnya
 
 // --- Counter Produksi ---
-int prodCount = 0;   // Total produksi
-int NGCount   = 0;   // Total NG
-int OKCount   = 0;   // OK = prodCount - NGCount
-unsigned int cycleCountSaved    = 0;  // Offset Nano
+unsigned long prodCount = 0;   // Total produksi
+unsigned long NGCount   = 0;   // Total NG
+unsigned long OKCount   = 0;   // OK = prodCount - NGCount
+unsigned long cycleCountSaved    = 0;  // Offset Nano
 unsigned int cycleCountReceived = 0;  // Counter dari Nano
 int cavity = 1;              // Cavity (default 1, bisa diubah dari proses)
 
@@ -237,8 +240,8 @@ String lastPartID     = "";
 String lastProsesDesc = "";
 String lastmcInfo     = "";
 String lastop_NIK     = "";
-int lastOKCount = 9999;  // Inisialisasi berbeda agar force update pertama kali
-int lastNGCount = 9999;
+unsigned long lastOKCount = 9999;  // Inisialisasi berbeda agar force update pertama kali
+unsigned long lastNGCount = 9999;
 
 // --- Variabel Tombol & Debounce ---
 unsigned long ngSubPressTime    = 0;     // Waktu awal tombol NG- ditekan
@@ -294,6 +297,12 @@ void writeByteToEEPROM(int addr, byte val);
 byte readByteFromEEPROM(int addr);
 unsigned int readCounterFromNano();
 String checkDowntimeButton();
+
+// =====================================================================
+// --- Software Reset Variables ---
+void(* resetFunc) (void) = 0;  // Fungsi bawaan Arduino untuk melompat ke memori 0 (Restart)
+unsigned long ctrlPressedTime = 0;
+bool isCtrlPressed = false;
 
 // =====================================================================
 //                           SETUP
@@ -360,7 +369,7 @@ void setup() {
 
   // Output interlock
   pinMode(interlockPin, OUTPUT);
-  digitalWrite(interlockPin, LOW);  // Awal: interlock OFF (mesin bebas)
+  digitalWrite(interlockPin, HIGH);  // Awal: interlock ON (mesin terkunci sejak dinyalakan)
 
   // Tombol navigasi
   pinMode(btnCTRL, INPUT_PULLUP);
@@ -405,6 +414,7 @@ void setup() {
     display_idMesin = readStringFromEEPROM(EEPROM_DISPLAY_ID_ADDR);
     if (display_idMesin == "") display_idMesin = mcID; // Fallback
     Serial.print(F("[EEPROM] mcID = ")); Serial.println(mcID);
+    readDataFromEEPROM(); // Baca data produksi & downtime
   } else {
     mcID = "";
     Serial.println(F("[EEPROM] Kosong, perlu setup."));
@@ -433,6 +443,12 @@ void loop() {
     client.loop();                 // Proses pesan masuk MQTT
   }
 
+  // --- Auto Save EEPROM Setiap 1 Menit ---
+  if (currentMillis - lastEEPROMSave >= 60000) {
+    saveDataToEEPROM();
+    lastEEPROMSave = currentMillis;
+  }
+
   // --- Baca Keypad (Non-Blocking) ---
   char key = keypad.getKey();
 
@@ -453,6 +469,31 @@ void loop() {
     }
   } else {
     digitalWrite(stopLed, LOW);
+  }
+
+  // --- Global Trigger: Hardware Reset (Tahan CTRL 3 Detik) ---
+  if (digitalRead(btnCTRL) == LOW) {
+    if (!isCtrlPressed) {
+      isCtrlPressed = true;
+      ctrlPressedTime = currentMillis;
+    } else if (currentMillis - ctrlPressedTime >= 3000) {
+      lcd.clear();
+      lcd.setCursor(0, 0); lcd.print(F(" SYSTEM REBOOT  "));
+      lcd.setCursor(0, 1); lcd.print(F(" Harap Tunggu.. "));
+      
+      // Simpan data terakhir ke EEPROM sebelum reboot agar tidak hilang (roll-back)
+      saveDataToEEPROM(); 
+      
+      // Reset juga counter di Nano agar tidak terjadi double-count saat Mega menyala lagi
+      Wire.beginTransmission(8);
+      Wire.write(0xAA);
+      Wire.endTransmission();
+
+      delay(1000);
+      resetFunc(); // Paksa restart Arduino dari nol
+    }
+  } else {
+    isCtrlPressed = false;
   }
 
   // --- Global Trigger: Mode Setup (CTRL + PROGRAM+ bersamaan) ---
@@ -906,15 +947,38 @@ void loop() {
     lastNanoRead = currentMillis;
     unsigned int rawCounter = readCounterFromNano();
     
-    // --- FITUR ANTI-DROP COUNTER ---
-    // Jika counter dari Nano tiba-tiba mengecil (misal dari 25 jadi 0 karena Nano restart akibat EMI),
-    // kita menjumlahkan total sebelumnya ke dalam cycleCountSaved agar produksi tidak turun.
-    if (rawCounter < cycleCountReceived && !(cycleCountReceived == 65535 && rawCounter == 0)) {
-       unsigned int gap = cycleCountReceived - rawCounter;
-       cycleCountSaved = cycleCountSaved + gap;  // Logika Addition (sama seperti smart_oee)
-       Serial.print(F("[WARNING] Nano Counter Drop Detected! Gap: ")); Serial.println(gap);
+    // --- FITUR ANTI-GLITCH & ANTI-DROP COUNTER ---
+    static byte zeroCount = 0;
+    if (rawCounter > 0) zeroCount = 0; // Reset counter jika mesin jalan
+
+    // 1. Filter I2C Disconnect (Biasanya terbaca 65535)
+    if (rawCounter == 65535) {
+       Serial.println(F("[ERROR] I2C 65535 Glitch Ignored!"));
     }
-    cycleCountReceived = rawCounter;
+    // 2. Deteksi Penurunan (Drop)
+    else if (rawCounter < cycleCountReceived) {
+       if (rawCounter == 0) {
+          zeroCount++;
+          // Wajib 2 detik berturut-turut membaca 0 baru diakui sebagai restart alat yang sah
+          if (zeroCount >= 2) {
+             unsigned int gap = cycleCountReceived - rawCounter;
+             cycleCountSaved = cycleCountSaved + gap;
+             cycleCountReceived = rawCounter;
+             Serial.print(F("[WARNING] Nano Restart Confirmed! Gap: ")); Serial.println(gap);
+          }
+       } else {
+          Serial.print(F("[ERROR] I2C Minor Drop Glitch Ignored! Raw: ")); Serial.println(rawCounter);
+       }
+    }
+    // 3. Deteksi Kenaikan (Spike)
+    else if (rawCounter > cycleCountReceived) {
+       // Mustahil mesin mencetak > 500 barang dalam jeda polling (1 detik atau saat lag jaringan 15 dtk).
+       if ((rawCounter - cycleCountReceived) > 500) {
+          Serial.print(F("[ERROR] I2C EMI Spike Glitch Ignored! Raw: ")); Serial.println(rawCounter);
+       } else {
+          cycleCountReceived = rawCounter;
+       }
+    }
     
     // DEBUG: Tampilkan data asli Nano ke Serial Monitor
     Serial.print(F("[DEBUG] Raw Nano: ")); 
@@ -923,7 +987,7 @@ void loop() {
     Serial.print(cycleCountSaved);
       
       // Perhitungan produksi: akumulasi history + pembacaan sekarang
-      unsigned int cycleCount = cycleCountSaved + cycleCountReceived;
+      unsigned long cycleCount = cycleCountSaved + cycleCountReceived;
       prodCount = cycleCount * cavity;
       OKCount = prodCount - NGCount;
 
@@ -991,6 +1055,7 @@ void loop() {
       doc["prodCount"]   = prodCount;
       doc["OKCount"]     = OKCount;
       doc["NGCount"]     = NGCount;
+      doc["timestamp"]   = timestamp;
 
       char jsonStr[512];
       serializeJson(doc, jsonStr);
@@ -1183,12 +1248,14 @@ void readNGButtons() {
       NGCount   = 0;
       OKCount   = 0;
 
-      // Reset memori lokal NG
+      // Reset detail NG
+      activeNgCount = 0;
       for (int i = 0; i < 20; i++) {
         localNgCodes[i] = "";
-        localNgQtys[i] = 0;
+        localNgQtys[i]  = 0;
       }
-      activeNgCount = 0;
+      
+      saveDataToEEPROM(); // Simpan reset ke EEPROM
 
       lcd.clear();
       lcd.setCursor(2, 1); lcd.print(F("COUNTER DIRESET!"));
@@ -1392,6 +1459,13 @@ void setupEthernet() {
   lcd.clear();
   lcd.setCursor(0, 0); lcd.print(F("Koneksi Ethernet..."));
 
+  // Beri waktu hardware W5100/W5500 untuk boot sepenuhnya (Sangat penting untuk Cold Boot!)
+  delay(2000);
+  
+  // Nonaktifkan chip SD Card pada Ethernet Shield agar tidak bentrok di jalur SPI
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
+
   Ethernet.begin(mac, ip);
   delay(1000); // Tunggu Ethernet shield siap
 
@@ -1539,4 +1613,70 @@ bool publishWithRetry(const char* topic, const char* payload) {
   reconnectMQTT();
   if (client.connected()) return client.publish(topic, payload);
   return false;
+}
+
+// =====================================================================
+//                    FUNGSI EEPROM UNSIGNED LONG
+// =====================================================================
+
+void writeLongToEEPROM(int addr, unsigned long data) {
+  Wire.beginTransmission(EEPROM_ADDRESS);
+  Wire.write((addr >> 8) & 0xFF);
+  Wire.write(addr & 0xFF);
+  Wire.write(0x00);
+  Wire.write(0x00);
+  Wire.write(0x00);
+  Wire.write(0x00);
+  Wire.endTransmission();
+  delay(10); 
+
+  Wire.beginTransmission(EEPROM_ADDRESS);
+  Wire.write((addr >> 8) & 0xFF);
+  Wire.write(addr & 0xFF);
+  Wire.write((data >> 24) & 0xFF);
+  Wire.write((data >> 16) & 0xFF);
+  Wire.write((data >> 8) & 0xFF);
+  Wire.write(data & 0xFF);
+  Wire.endTransmission();
+  delay(10); 
+}
+
+unsigned long readLongFromEEPROM(int addr) {
+  Wire.beginTransmission(EEPROM_ADDRESS);
+  Wire.write((addr >> 8) & 0xFF);
+  Wire.write(addr & 0xFF);
+  Wire.endTransmission();
+
+  Wire.requestFrom(EEPROM_ADDRESS, 4);
+  if (Wire.available() < 4) return 0;
+
+  byte b1 = Wire.read();
+  byte b2 = Wire.read();
+  byte b3 = Wire.read();
+  byte b4 = Wire.read();
+
+  return ((unsigned long)b1 << 24) | ((unsigned long)b2 << 16) | ((unsigned long)b3 << 8) | b4;
+}
+
+void saveDataToEEPROM() {
+  int addr = EEPROM_DATA_START;
+  unsigned long cycleCountToSave = cycleCountSaved + cycleCountReceived;
+  writeLongToEEPROM(addr, cycleCountToSave); addr += 4;
+  writeLongToEEPROM(addr, NGCount); addr += 4;
+  Serial.println(F("[EEPROM] Data Saved!"));
+}
+
+void readDataFromEEPROM() {
+  int addr = EEPROM_DATA_START;
+  cycleCountSaved = readLongFromEEPROM(addr); addr += 4;
+  NGCount = readLongFromEEPROM(addr); addr += 4;
+  
+  // Hitung ulang OKCount & prodCount di memori utama (karena cycleCountReceived = 0 di awal boot)
+  prodCount = cycleCountSaved * cavity;
+  if(prodCount >= NGCount) {
+    OKCount = prodCount - NGCount;
+  } else {
+    OKCount = 0; 
+  }
+  Serial.println(F("[EEPROM] Data Loaded!"));
 }

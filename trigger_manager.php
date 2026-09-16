@@ -1,7 +1,16 @@
-DELIMITER //
+<?php
+/**
+ * trigger_manager.php
+ * Pengelola dan Pemasang Trigger Otomatis MySQL SMMS / IoT MES
+ */
 
-DROP TRIGGER IF EXISTS before_log_quality_insert//
+function installDatabaseTriggers($conn) {
+    // 1. Bersihkan trigger lama jika ada
+    $conn->query("DROP TRIGGER IF EXISTS before_log_quality_insert");
+    $conn->query("DROP TRIGGER IF EXISTS after_log_quality_insert");
 
+    // 2. Trigger BEFORE INSERT (Anti-Freeze, Auto-Cavity, Offset Sync)
+    $sql_before = "
 CREATE TRIGGER before_log_quality_insert
 BEFORE INSERT ON log_quality
 FOR EACH ROW
@@ -12,7 +21,7 @@ BEGIN
     DECLARE v_delta INT DEFAULT 0;
     DECLARE v_qty_added INT DEFAULT 0;
 
-    -- Fetch current cavity
+    -- Ambil faktor cavity dari master_ct
     IF NEW.kode_proses IS NOT NULL AND NEW.kode_proses != '' THEN
         SELECT cavity INTO v_cavity FROM master_ct WHERE kode = NEW.kode_proses LIMIT 1;
         IF v_cavity IS NULL OR v_cavity < 1 THEN
@@ -20,13 +29,13 @@ BEGIN
         END IF;
     END IF;
 
-    -- Fetch last raw and db counts for this machine
+    -- Ambil counter terakhir mesin
     SELECT raw_prodCount, prodCount INTO v_last_raw, v_last_db 
     FROM log_quality 
     WHERE mcID = NEW.mcID 
     ORDER BY id DESC LIMIT 1;
 
-    -- If no records in log_quality (e.g., after shift reset), fetch from master_mesin
+    -- Jika tabel log_quality kosong pasca reset shift, ambil dari master_mesin
     IF v_last_raw IS NULL OR v_last_db IS NULL THEN
         SELECT offset_raw_produksi, offset_produksi INTO v_last_raw, v_last_db
         FROM master_mesin
@@ -43,13 +52,13 @@ BEGIN
     ELSE
         SET v_delta = NEW.prodCount - v_last_raw;
 
-        -- Normal increment (menerima delta wajar hingga 1000 part setelah server restart/lag)
+        -- Normal increment (menerima lonjakan wajar hingga 1000 saat restart)
         IF v_delta > 0 AND v_delta <= 1000 THEN
             SET v_qty_added = v_delta;
             SET NEW.raw_prodCount = NEW.prodCount;
             SET NEW.prodCount = v_last_db + (v_qty_added * v_cavity);
             SET NEW.delta_prodCount = (v_qty_added * v_cavity);
-        -- Reset hardware Arduino (delta < 0 dan nilai baru <= 5)
+        -- Reset hardware ESP32 / Arduino (delta < 0 dan nilai baru <= 5)
         ELSEIF v_delta < 0 AND NEW.prodCount <= 5 THEN
             SET v_qty_added = NEW.prodCount;
             SET NEW.raw_prodCount = NEW.prodCount;
@@ -67,10 +76,16 @@ BEGIN
             SET NEW.delta_prodCount = 0;
         END IF;
     END IF;
-END//
+END;
+    ";
 
-DROP TRIGGER IF EXISTS after_log_quality_insert//
+    if (!$conn->multi_query($sql_before)) {
+        return ['success' => false, 'message' => "Gagal membuat trigger before: " . $conn->error];
+    }
+    while ($conn->more_results() && $conn->next_result()) {;}
 
+    // 3. Trigger AFTER INSERT (Perhitungan Downtime Presisi Lintas Jam & Malam)
+    $sql_after = "
 CREATE TRIGGER after_log_quality_insert
 AFTER INSERT ON log_quality
 FOR EACH ROW
@@ -103,15 +118,14 @@ BEGIN
             ORDER BY id ASC LIMIT 1;
 
             IF v_start_time IS NOT NULL THEN
-                -- Hitung durasi downtime (mendukung pergantian tengah malam pada Shift 2)
                 SET v_durasi = TIMESTAMPDIFF(SECOND, v_start_time, NEW.timestamp);
 
-                -- Abaikan jika durasi > 4 jam (14400 detik) atau anomali negatif (jeda off-shift / antar-shift)
+                -- Batas maksimal 4 jam (14400 detik) untuk mengabaikan downtime anomali/pabrik libur lama
                 IF v_durasi > 14400 OR v_durasi < 0 THEN
                     SET v_durasi = 0;
                 END IF;
 
-                -- Filter durasi mikro: Hanya catat downtime jika berdurasi minimal 30 detik
+                -- Hanya rekam downtime jika durasi valid minimal 30 detik (menghilangkan bounce tombol)
                 IF v_durasi >= 30 THEN
                     INSERT INTO log_downtime (mcID, kode_dt, durasi_detik, timestamp) 
                     VALUES (NEW.mcID, v_last_info, v_durasi, NEW.timestamp);
@@ -119,6 +133,13 @@ BEGIN
             END IF;
         END IF;
     END IF;
-END//
+END;
+    ";
 
-DELIMITER ;
+    if (!$conn->multi_query($sql_after)) {
+        return ['success' => false, 'message' => "Gagal membuat trigger after: " . $conn->error];
+    }
+    while ($conn->more_results() && $conn->next_result()) {;}
+
+    return ['success' => true, 'message' => "Trigger berhasil dipasang 100%"];
+}

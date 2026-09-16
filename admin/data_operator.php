@@ -354,6 +354,8 @@ if (isset($_GET['ajax']) || isset($_POST['ajax']) || isset($_REQUEST['ajax'])) {
         .btn-primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); color: #fff; }
         .btn-danger { background: var(--danger); border-color: var(--danger); }
         .btn-danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); }
+        .btn-back { background: var(--card-bg); border: 1px solid var(--card-border); color: var(--text-muted); padding: 8px 14px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .btn-back:hover { background: #334155; color: #fff; border-color: var(--primary); transform: translateX(-2px); }
 
         /* DataTables Custom Styling */
         table.dataTable { width: 100%; border-collapse: collapse; margin-top: 20px !important; color: #fff;}
@@ -406,23 +408,29 @@ if (isset($_GET['ajax']) || isset($_POST['ajax']) || isset($_REQUEST['ajax'])) {
     <div id="overlay" onclick="toggleSidebar()"></div>
     <div id="sidebar" class="sidebar">
         <div class="sidebar-header">
-            <h2>PT CNC Menu</h2>
+            <h2>PT CNC Apps</h2>
             <button class="close-btn" onclick="toggleSidebar()">&times;</button>
         </div>
         <div class="sidebar-menu">
             <a href="<?= BASE_URL ?>user/index.php">📊 Dashboard Utama</a>
-            <a href="<?= BASE_URL ?>user/history/index.php">📜 History Produksi</a>
+            <a href="<?= BASE_URL ?>user/history/index.php">📁 History Produksi</a>
             <a href="<?= BASE_URL ?>user/summary_oee.php">📈 Rangkuman OEE</a>
             <?php if(isset($user_role) && $user_role === 'it'): ?>
+                <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Master Jam (Template)</a>
                 <a href="<?= BASE_URL ?>setting/pengaturan_line.php">⚙️ Pengaturan Line</a>
-                <a href="<?= BASE_URL ?>setting/pengaturan_jam.php">⏱️ Pengaturan Jam Kerja</a>
+                <a href="<?= BASE_URL ?>setting/recalculate_history.php">🔄 Rekalkulasi History</a>
             <?php endif; ?>
             <?php if(isset($_SESSION['role']) && $_SESSION['role'] === 'it'): ?>
                 <a href="<?= BASE_URL ?>setting/settings_auth.php">🔒 Pengaturan Keamanan</a>
             <?php endif; ?>
-            <a href="<?= BASE_URL ?>admin/skill_matrix.php">🧠 Skill Matrix</a>
-            <a href="<?= BASE_URL ?>admin/data_operator.php" class="active">🧑‍🔧 Data Operator</a>
-            <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php if(isset($user_role) && in_array($user_role, ['admin', 'it'])): ?>
+                <a href="<?= BASE_URL ?>admin/skill_matrix.php">🎯 Skill Matrix Mesin</a>
+                <a href="<?= BASE_URL ?>admin/data_operator.php" class="active">👤 Data Operator</a>
+                <a href="<?= BASE_URL ?>admin/master_ct.php">📋 Master Cycle Time (CT)</a>
+            <?php endif; ?>
+            <?php if(isset($_SESSION['user_id'])): ?>
+                <a href="<?= BASE_URL ?>logout.php" style="color: #ef4444; margin-top: 20px;">🚪 Logout</a>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -430,7 +438,8 @@ if (isset($_GET['ajax']) || isset($_POST['ajax']) || isset($_REQUEST['ajax'])) {
     <div class="header">
         <div class="header-left">
             <button class="menu-btn" onclick="toggleSidebar()">&#9776;</button>
-            <h1>Data Operator</h1>
+            <a href="<?= BASE_URL ?>user/index.php" onclick="if(history.length > 1 && document.referrer.indexOf(window.location.host) !== -1){ history.back(); return false; }" class="btn-back">← Dashboard</a>
+            <h1>👤 DATA OPERATOR</h1>
         </div>
         <div>
             <button class="btn btn-primary" onclick="openModal('add')">+ Tambah Operator</button>
