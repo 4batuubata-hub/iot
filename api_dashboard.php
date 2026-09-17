@@ -53,8 +53,10 @@ if ($result && $result->num_rows > 0) {
         $waktu_selesai = $shift_info['selesai'];
         $mcID = $row['id_mesin'];
         $numeric_mcID = $row['numeric_mcID'] ?? '';
-        $mc_where = (!empty($numeric_mcID) && $numeric_mcID !== $mcID) ? "(mcID = '$mcID' OR mcID = '$numeric_mcID')" : "mcID = '$mcID'";
-        $lq_where = (!empty($numeric_mcID) && $numeric_mcID !== $mcID) ? "(lq.mcID = '$mcID' OR lq.mcID = '$numeric_mcID')" : "lq.mcID = '$mcID'";
+        $all_ids = array_unique(array_filter([$mcID, $numeric_mcID]));
+        $in_ids = "'" . implode("','", array_map([$conn, 'real_escape_string'], $all_ids)) . "'";
+        $mc_where = "mcID IN ($in_ids)";
+        $lq_where = "lq.mcID IN ($in_ids)";
         
         $is_lembur = false;
         if(isset($overrides[$mcID]) || (!empty($numeric_mcID) && isset($overrides[$numeric_mcID]))) {
@@ -96,36 +98,20 @@ if ($result && $result->num_rows > 0) {
         
         $prodCount = $offset_produksi;
         
-        // 1. Coba ambil SUM delta_prodCount jika trigger database aktif
-        $sql_delta = "SELECT COALESCE(SUM(lq.delta_prodCount), 0) as s_delta FROM log_quality lq WHERE $lq_where AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai'";
-        $res_delta = $conn->query($sql_delta);
-        $s_delta = ($res_delta && $res_delta->num_rows > 0) ? (int)$res_delta->fetch_assoc()['s_delta'] : 0;
+        // Single Source of Truth (SSOT) Akumulasi Produksi Shift:
+        // Menghitung delta secara berurutan, tahan reset hardware ESP32 / ganti model (delta < 0),
+        // dan dilengkapi proteksi lonjakan reconnect dump. 100% sinkron dengan user/detail.php.
+        $shift_prod = calculateShiftProductionCount($conn, $mc_where, $waktu_mulai, $waktu_selesai, $ideal_ct);
         
-        if ($s_delta > 0) {
-            $prodCount += $s_delta;
-        } else {
-            // 2. Fallback cerdas SSOT: hitung prodCount shift = max(prodCount shift) - baseline(sebelum shift)
-            $sql_max = "SELECT MAX(prodCount) as max_p, MIN(prodCount) as min_p FROM log_quality WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
-            $res_max = $conn->query($sql_max);
-            if ($res_max && $res_max->num_rows > 0) {
-                $r_max = $res_max->fetch_assoc();
-                if ($r_max['max_p'] !== null) {
-                    $max_p = (int)$r_max['max_p'];
-                    // Baseline sebelum shift
-                    $sql_base = "SELECT prodCount FROM log_quality WHERE $mc_where AND timestamp < '$waktu_mulai' ORDER BY timestamp DESC, id DESC LIMIT 1";
-                    $res_base = $conn->query($sql_base);
-                    $base_p = ($res_base && $res_base->num_rows > 0) ? (int)$res_base->fetch_assoc()['prodCount'] : 0;
-                    
-                    if ($max_p >= $base_p && $base_p > 0) {
-                        $prodCount += ($max_p - $base_p);
-                    } else {
-                        $min_p = (int)$r_max['min_p'];
-                        $shift_diff = max(0, $max_p - $min_p);
-                        $prodCount += ($shift_diff > 0 ? $shift_diff : $max_p);
-                    }
-                }
-            }
+        // Fallback ke SUM(delta_prodCount) trigger DB jika data logs belum terisi
+        if ($shift_prod <= 0) {
+            $sql_delta = "SELECT COALESCE(SUM(lq.delta_prodCount), 0) as s_delta FROM log_quality lq WHERE $lq_where AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai'";
+            $res_delta = $conn->query($sql_delta);
+            $shift_prod = ($res_delta && $res_delta->num_rows > 0) ? (int)$res_delta->fetch_assoc()['s_delta'] : 0;
         }
+        
+        $prodCount += $shift_prod;
+
         $total_ideal_sec = $prodCount * $ideal_ct;
 
         $sql_ng = "SELECT COALESCE(SUM(qty_ng), 0) as shift_ng FROM log_ng WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
@@ -167,7 +153,7 @@ if ($result && $result->num_rows > 0) {
         else { $catStatus = 'OFF'; $statusText = "OFF"; $statusClass = "status-off"; }
 
         // 1. Ambil Data Downtime Historis - STANDAR ISO 22400-2 (Clipped to Shift)
-        $sql_dt_details = "SELECT ld.kode_dt, md.label_dt, ld.durasi_detik, ld.timestamp FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE (ld.mcID = '$mcID' OR ld.mcID = '$numeric_mcID') AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'";
+        $sql_dt_details = "SELECT ld.kode_dt, md.label_dt, ld.durasi_detik, ld.timestamp FROM log_downtime ld LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt WHERE ld.mcID IN ($in_ids) AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'";
         $res_dt_details = $conn->query($sql_dt_details);
         $historical_real_dt = 0;
         if ($res_dt_details && $res_dt_details->num_rows > 0) {
@@ -182,7 +168,7 @@ if ($result && $result->num_rows > 0) {
                 }
             }
         }
-
+        
         // 2. Ambil Data Downtime Real-Time (Ongoing) - STANDAR ISO 22400-2
         $ongoing_real_dt = 0;
         

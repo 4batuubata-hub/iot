@@ -14,6 +14,28 @@ $conn->query("SET time_zone = '+07:00'");
 $mcID = isset($_GET['mcID']) ? $conn->real_escape_string($_GET['mcID']) : '';
 if(empty($mcID)) die("<h2 style='color:white; text-align:center;'>Pilih mesin dari dashboard terlebih dahulu!</h2>");
 
+// === DUAL-ID RESOLVER (Sinkron dengan api_dashboard.php) ===
+// Mesin bisa punya 2 ID: string id_mesin (ex: '2 WS35 - 020') dan numeric mcID (ex: '3196')
+// Trigger & log_downtime mencatat dengan mcID dari log_quality, yang bisa keduanya.
+$numeric_mcID = '';
+$all_ids = array_unique(array_filter([$mcID]));
+$res_nm = $conn->query("SELECT mcID, id_mesin FROM master_mesin WHERE id_mesin = '$mcID' OR mcID = '$mcID' LIMIT 1");
+if ($res_nm && $res_nm->num_rows > 0) {
+    $r_nm = $res_nm->fetch_assoc();
+    $numeric_mcID = $r_nm['mcID'] ?? '';
+    if (!empty($r_nm['mcID'])) $all_ids[] = $r_nm['mcID'];
+    if (!empty($r_nm['id_mesin'])) $all_ids[] = $r_nm['id_mesin'];
+}
+$all_ids = array_unique(array_filter($all_ids));
+$in_ids = "'" . implode("','", array_map([$conn, 'real_escape_string'], $all_ids)) . "'";
+
+// WHERE clause untuk query tanpa alias tabel
+$mc_where = "mcID IN ($in_ids)";
+// WHERE clause untuk log_downtime dengan alias ld.
+$ld_where = "ld.mcID IN ($in_ids)";
+// WHERE clause untuk log_quality dengan alias lq.
+$lq_where = "lq.mcID IN ($in_ids)";
+
 if (!function_exists('getLogicalDay')) {
     function getLogicalDay($time = null) {
         if ($time === null) $time = time();
@@ -247,9 +269,9 @@ if($override) {
 
 
 $sql_info = "SELECT lq.*, mm.nama_mesin, mm.offset_produksi, mm.mcID as string_mcID, mc.ct_jam, mc.part_name, mc.part_number, mc.proses_name, mc.proses_description, mc.ct_pcs, mc.line, mo.nama as nama_operator, mo.nik, TIMESTAMPDIFF(SECOND, lq.timestamp, NOW()) as last_update_sec, lq.timestamp as last_ts
-             FROM master_mesin mm LEFT JOIN (SELECT l1.* FROM log_quality l1 INNER JOIN (SELECT mcID, MAX(id) as max_id FROM log_quality GROUP BY mcID) l2 ON l1.mcID = l2.mcID AND l1.id = l2.max_id) lq ON mm.id_mesin = lq.mcID
-             LEFT JOIN (SELECT mcID, kode_proses FROM log_quality WHERE id IN (SELECT MAX(id) FROM log_quality WHERE kode_proses IS NOT NULL AND kode_proses != '' GROUP BY mcID)) lq_kp ON mm.id_mesin = lq_kp.mcID
-             LEFT JOIN (SELECT mcID, op_NIK FROM log_quality WHERE id IN (SELECT MAX(id) FROM log_quality WHERE op_NIK IS NOT NULL AND op_NIK != '' GROUP BY mcID)) lq_op ON mm.id_mesin = lq_op.mcID
+             FROM master_mesin mm LEFT JOIN (SELECT l1.* FROM log_quality l1 INNER JOIN (SELECT mcID, MAX(id) as max_id FROM log_quality GROUP BY mcID) l2 ON l1.mcID = l2.mcID AND l1.id = l2.max_id) lq ON (mm.id_mesin = lq.mcID OR mm.mcID = lq.mcID)
+             LEFT JOIN (SELECT mcID, kode_proses FROM log_quality WHERE id IN (SELECT MAX(id) FROM log_quality WHERE kode_proses IS NOT NULL AND kode_proses != '' GROUP BY mcID)) lq_kp ON (mm.id_mesin = lq_kp.mcID OR mm.mcID = lq_kp.mcID)
+             LEFT JOIN (SELECT mcID, op_NIK FROM log_quality WHERE id IN (SELECT MAX(id) FROM log_quality WHERE op_NIK IS NOT NULL AND op_NIK != '' GROUP BY mcID)) lq_op ON (mm.id_mesin = lq_op.mcID OR mm.mcID = lq_op.mcID)
              LEFT JOIN master_ct mc ON lq_kp.kode_proses = mc.kode LEFT JOIN master_operator mo ON lq_op.op_NIK = mo.nik 
              WHERE mm.id_mesin = '$mcID' OR mm.mcID = '$mcID' LIMIT 1";
 $res_info = $conn->query($sql_info);
@@ -340,13 +362,15 @@ $isTimeout = (!isset($info['last_update_sec']) || $info['last_update_sec'] === n
         }
 
 $offset_produksi = (int)($info['offset_produksi'] ?? 0);
-$sql_prod = "SELECT COALESCE(SUM(delta_prodCount), 0) as total_prod FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
+// FIX: Gunakan dual-ID ($mc_where) agar produksi terbaca meskipun data tersimpan dengan numeric mcID
+$sql_prod = "SELECT COALESCE(SUM(delta_prodCount), 0) as total_prod FROM log_quality WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
 $res_prod = $conn->query($sql_prod);
 $prod_delta = ($res_prod && $res_prod->num_rows > 0) ? (int)$res_prod->fetch_assoc()['total_prod'] : 0;
 $totalProd = $offset_produksi + $prod_delta;
 
 
-$res_ng = $conn->query("SELECT COALESCE(SUM(CASE WHEN qty_ng > 0 THEN qty_ng ELSE 0 END), 0) as total_ng_plus, COALESCE(SUM(CASE WHEN qty_ng < 0 THEN ABS(qty_ng) ELSE 0 END), 0) as total_repair FROM log_ng WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'");
+// FIX: Gunakan dual-ID untuk log_ng
+$res_ng = $conn->query("SELECT COALESCE(SUM(CASE WHEN qty_ng > 0 THEN qty_ng ELSE 0 END), 0) as total_ng_plus, COALESCE(SUM(CASE WHEN qty_ng < 0 THEN ABS(qty_ng) ELSE 0 END), 0) as total_repair FROM log_ng WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'");
 if ($res_ng && $res_ng->num_rows > 0) {
     $row_ng = $res_ng->fetch_assoc();
     $totalNG = $row_ng['total_ng_plus'];
@@ -415,10 +439,12 @@ $historical_real_dt = 0;
 $pareto_map = [];
 $tpm_summary_map = [];
 
+// FIX ROOT CAUSE LOSSTIME=0: Gunakan dual-ID ($ld_where) agar data di log_downtime
+// yang dicatat trigger dengan numeric mcID juga terbaca saat URL menggunakan string id_mesin
 $res_dt_all = $conn->query("SELECT ld.timestamp, ld.kode_dt, ld.durasi_detik, md.label_dt 
                             FROM log_downtime ld 
                             LEFT JOIN master_downtime md ON ld.kode_dt = md.kode_dt 
-                            WHERE ld.mcID = '$mcID' AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
+                            WHERE $ld_where AND ld.timestamp >= '$waktu_mulai' AND ld.timestamp <= '$waktu_selesai'");
 if ($res_dt_all && $res_dt_all->num_rows > 0) {
     $shift_start_ts = strtotime($shift_info['work_start'] ?? $waktu_mulai);
     $shift_end_ts = strtotime($shift_info['work_end'] ?? $waktu_selesai);
@@ -456,14 +482,15 @@ if ($statusTeks != 'RUNNING') {
         $infoEsc = $conn->real_escape_string($infoAsli);
         $end_time_expr = ($isTimeout && isset($info['last_ts'])) ? "'{$info['last_ts']}'" : "NOW()";
         
-        $sql_start = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo != '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp DESC LIMIT 1";
+        // FIX: Gunakan dual-ID untuk mendeteksi waktu mulai ongoing downtime
+        $sql_start = "SELECT timestamp FROM log_quality WHERE $mc_where AND mcInfo != '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp DESC LIMIT 1";
         $res_start = $conn->query($sql_start);
         $downtime_start_ts = null;
         
         if ($res_start && $res_start->num_rows > 0) {
             $downtime_start_ts = $res_start->fetch_assoc()['timestamp'];
         } else {
-            $sql_first = "SELECT timestamp FROM log_quality WHERE mcID = '$mcID' AND mcInfo = '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC LIMIT 1";
+            $sql_first = "SELECT timestamp FROM log_quality WHERE $mc_where AND mcInfo = '$infoEsc' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC LIMIT 1";
             $res_first = $conn->query($sql_first);
             $downtime_start_ts = ($res_first && $res_first->num_rows > 0) ? $res_first->fetch_assoc()['timestamp'] : $waktu_mulai;
         }
@@ -512,8 +539,9 @@ $totalLosstimeMenit = round($total_real_dt / 60);
 
 // 4. Hitung Planned Production Time (PPT) Sesuai Standar ISO 22400-2
 $ppt_seconds = calculateShiftPPTSeconds($conn, $template_aktif, $shift_target, $hari_aktif, $waktu_mulai, time());
-$res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, mc.part_name as log_part_name, mc.part_number as log_part_number, mc.proses_description as log_proses_desc, COALESCE(SUM(CASE WHEN ln.qty_ng > 0 THEN ln.qty_ng ELSE 0 END), 0) as qty_ng_plus, COALESCE(SUM(CASE WHEN ln.qty_ng < 0 THEN ABS(ln.qty_ng) ELSE 0 END), 0) as qty_repair, COALESCE(SUM(ln.qty_ng), 0) as net_scrap FROM log_ng ln LEFT JOIN master_defect md ON ln.kode_ng = md.kode_defect LEFT JOIN master_ct mc ON ln.kode_proses = mc.kode WHERE ln.mcID = '$mcID' AND ln.timestamp >= '$waktu_mulai' AND ln.timestamp <= '$waktu_selesai' GROUP BY ln.kode_proses, ln.kode_ng, md.keterangan, mc.part_name, mc.part_number, mc.proses_description");
-$res_logs_op = $conn->query("SELECT timestamp, op_NIK, prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC, id ASC");
+// FIX: Dual-ID untuk summary NG dan log operator
+$res_ng_summary = $conn->query("SELECT md.keterangan as nama_defect, mc.part_name as log_part_name, mc.part_number as log_part_number, mc.proses_description as log_proses_desc, COALESCE(SUM(CASE WHEN ln.qty_ng > 0 THEN ln.qty_ng ELSE 0 END), 0) as qty_ng_plus, COALESCE(SUM(CASE WHEN ln.qty_ng < 0 THEN ABS(ln.qty_ng) ELSE 0 END), 0) as qty_repair, COALESCE(SUM(ln.qty_ng), 0) as net_scrap FROM log_ng ln LEFT JOIN master_defect md ON ln.kode_ng = md.kode_defect LEFT JOIN master_ct mc ON ln.kode_proses = mc.kode WHERE $mc_where AND ln.timestamp >= '$waktu_mulai' AND ln.timestamp <= '$waktu_selesai' GROUP BY ln.kode_proses, ln.kode_ng, md.keterangan, mc.part_name, mc.part_number, mc.proses_description");
+$res_logs_op = $conn->query("SELECT timestamp, op_NIK, prodCount FROM log_quality WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai' ORDER BY timestamp ASC, id ASC");
 $opSessions = [];
 $currentSession = null;
 if ($res_logs_op && $res_logs_op->num_rows > 0) {
@@ -605,10 +633,11 @@ if ($is_lembur) {
 }
 
 // Fetch all logs for the current shift period
+// FIX: Dual-ID untuk query bucket chart Dekidaka
 $sql_logs = "SELECT lq.timestamp, lq.prodCount, m.part_number, m.part_name, m.proses_name, m.proses_description, m.ct_pcs, m.ct_jam
              FROM log_quality lq
              LEFT JOIN master_ct m ON lq.kode_proses = m.kode
-             WHERE lq.mcID = '$mcID' AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai'
+             WHERE $lq_where AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai'
              ORDER BY lq.timestamp ASC, lq.id ASC";
 $res_logs = $conn->query($sql_logs);
 
@@ -626,7 +655,8 @@ $prev_prodCount = 0;
 $prev_log_timestamp = null; // Untuk spike detection
 
 // Ambil baseline counter terakhir sebelum shift dimulai (mencegah lonjakan saat pergantian shift)
-$sql_baseline = "SELECT prodCount FROM log_quality WHERE mcID = '$mcID' AND timestamp < '$waktu_mulai' ORDER BY timestamp DESC, id DESC LIMIT 1";
+// FIX: Dual-ID untuk baseline counter sebelum shift
+$sql_baseline = "SELECT prodCount FROM log_quality WHERE $mc_where AND timestamp < '$waktu_mulai' ORDER BY timestamp DESC, id DESC LIMIT 1";
 $res_baseline = $conn->query($sql_baseline);
 if ($res_baseline && $res_baseline->num_rows > 0) {
     $prev_prodCount = (int)$res_baseline->fetch_assoc()['prodCount'];
@@ -643,26 +673,52 @@ if ($res_logs && $res_logs->num_rows > 0) {
         if ($delta > 0) {
             $qty_added = $delta;
         } else if ($delta < 0) {
-            // ESP32 Ter-Reset!
-            $qty_added = $curr_prodCount; 
+            // ESP32/Arduino Ter-Reset → counter mulai dari 0 lagi.
+            // Gunakan nilai raw saat ini (bukan keseluruhan $curr_prodCount
+            // yang sudah trigger-adjusted/kumulatif) sebagai delta reset.
+            // Jika trigger aktif, delta_prodCount di row ini sudah = 0,
+            // jadi qty_added = 0 adalah aman. Tapi jika tidak ada trigger,
+            // gunakan curr_prodCount sebagai produksi baru dari 0.
+            $qty_added = max(0, $curr_prodCount);
         }
         
         $curr_log_ts = strtotime($row['timestamp']);
         
-        // ======== PHYSICAL CAPPING & ANTI-RECONNECT SPIKE ========
+        // ======== ANTI-RECONNECT SPIKE (sesuai catatan log 11 Sep 2026) ========
+        // Masalah: Mesin offline, Arduino counting via EEPROM. Saat reconnect,
+        // delta besar langsung masuk ke 1 slot jam → grafik jebol (lihat log
+        // baris 788-801: kasus 4.765 pcs dalam 1 jam).
+        //
+        // Strategi: Jika ada time gap BESAR (mesin sempat offline/STAND BY lama)
+        // DAN delta yang masuk MELEWATI batas fisik proporsional terhadap gap waktu,
+        // ini adalah "reconnect dump" → BUANG total (qty_added = 0) & reset baseline.
+        // Jangan dikap ke 720/jam karena itu tetap overcounting untuk slot tersebut.
         $curr_ct = !empty($row['ct_pcs']) ? (float)$row['ct_pcs'] : (float)$ctPcs;
-        $phys_cap = getPhysicalHourlyCapacity($curr_ct);
-        $max_allowed_delta = (int)round($phys_cap * 1.25);
+        $phys_cap_per_hour = getPhysicalHourlyCapacity($curr_ct); // pcs per jam
         
-        if ($qty_added > $max_allowed_delta && $prev_log_timestamp !== null) {
+        if ($qty_added > 0 && $prev_log_timestamp !== null) {
             $time_gap_seconds = $curr_log_ts - $prev_log_timestamp;
-            if ($time_gap_seconds > 900) { // Gap > 15 menit (server offline/reconnect)
-                // Capping ke kapasitas fisik, sinkronkan baseline counter
-                $qty_added = min($qty_added, $phys_cap);
-                $prev_prodCount = $curr_prodCount;
-                $prev_log_timestamp = $curr_log_ts;
+            
+            if ($time_gap_seconds > 0) {
+                // Kapasitas fisik proporsional terhadap gap waktu aktual
+                $proportional_cap = (int)ceil($phys_cap_per_hour * $time_gap_seconds / 3600 * 1.20);
+                // Toleransi 20% di atas kapasitas proporsional untuk menghindari
+                // pembuangan produksi nyata saat mesin speed-up singkat
+                
+                if ($qty_added > $proportional_cap && $time_gap_seconds > 300) {
+                    // Gap > 5 menit DAN delta melebihi kapasitas fisik proporsional
+                    // → ini adalah reconnect dump, bukan produksi nyata. BUANG.
+                    $qty_added = 0;
+                    // Reset baseline ke nilai saat ini agar delta berikutnya
+                    // dihitung dengan benar (tidak double-discard)
+                    $prev_prodCount = $curr_prodCount;
+                    $prev_log_timestamp = $curr_log_ts;
+                    continue; // Skip row ini, tidak masuk ke bucket manapun
+                }
             }
         }
+
+        // Update tracking variables setiap iterasi (termasuk sebelum continue)
         $prev_log_timestamp = $curr_log_ts;
         $prev_prodCount = $curr_prodCount;
 

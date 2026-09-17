@@ -437,3 +437,85 @@ if (!defined('HELPER_JADWAL_LOADED')) {
         ];
     }
 }
+
+if (!function_exists('normalizeDowntimeLabel')) {
+    /**
+     * Normalisasi kode atau label downtime ke bentuk standar display
+     */
+    function normalizeDowntimeLabel($kode_or_label) {
+        $u = strtoupper(trim($kode_or_label));
+        if ($u === 'SB' || $u === 'STAND BY' || $u === 'STANDBY') return 'Stand By';
+        if ($u === 'MESIN OFF' || $u === 'OFF') return 'Mesin Off';
+        if ($u === '5P' || $u === '5S' || $u === '5P/5S') return '5P/5S';
+        if ($u === 'RUNNING' || $u === 'MESIN RUNNING') return 'Running';
+        return trim($kode_or_label);
+    }
+}
+
+
+
+if (!function_exists('calculateShiftProductionCount')) {
+    /**
+     * Single Source of Truth (SSOT) Akumulasi Produksi Shift
+     * Menghitung akumulasi delta prodCount secara berurutan.
+     * Menangani pergantian part / reset counter hardware (delta < 0)
+     * dan proteksi terhadap reconnect dump / lonjakan data offline.
+     */
+    function calculateShiftProductionCount($conn, $mc_where, $waktu_mulai, $waktu_selesai, $default_ct = 5) {
+        $sql_base = "SELECT prodCount FROM log_quality WHERE $mc_where AND timestamp < '$waktu_mulai' ORDER BY timestamp DESC, id DESC LIMIT 1";
+        $res_base = $conn->query($sql_base);
+        $prev_prodCount = ($res_base && $res_base->num_rows > 0) ? (int)$res_base->fetch_assoc()['prodCount'] : 0;
+        
+        $sql_logs = "SELECT lq.timestamp, lq.prodCount, mc.ct_pcs 
+                     FROM log_quality lq 
+                     LEFT JOIN master_ct mc ON lq.kode_proses = mc.kode 
+                     WHERE $mc_where AND lq.timestamp >= '$waktu_mulai' AND lq.timestamp <= '$waktu_selesai' 
+                     ORDER BY lq.timestamp ASC, lq.id ASC";
+        $res_logs = $conn->query($sql_logs);
+        
+        if (!$res_logs || $res_logs->num_rows == 0) {
+            return 0;
+        }
+        
+        $total_prod = 0;
+        $prev_log_ts = null;
+        
+        while ($row = $res_logs->fetch_assoc()) {
+            $curr_prodCount = (int)$row['prodCount'];
+            $delta = $curr_prodCount - $prev_prodCount;
+            $qty_added = 0;
+            
+            if ($delta > 0) {
+                $qty_added = $delta;
+            } else if ($delta < 0) {
+                // Reset ESP32 atau pergantian model (dandory)
+                $qty_added = max(0, $curr_prodCount);
+            }
+            
+            $curr_log_ts = strtotime($row['timestamp']);
+            $ct = !empty($row['ct_pcs']) ? (float)$row['ct_pcs'] : (float)$default_ct;
+            $phys_cap_hourly = getPhysicalHourlyCapacity($ct);
+            
+            // Proteksi reconnect dump
+            if ($qty_added > 0 && $prev_log_ts !== null) {
+                $gap = $curr_log_ts - $prev_log_ts;
+                if ($gap > 0) {
+                    $proportional_cap = (int)ceil($phys_cap_hourly * $gap / 3600 * 1.20);
+                    if ($qty_added > $proportional_cap && $gap > 300) {
+                        $qty_added = 0;
+                        $prev_prodCount = $curr_prodCount;
+                        $prev_log_ts = $curr_log_ts;
+                        continue;
+                    }
+                }
+            }
+            
+            $prev_log_ts = $curr_log_ts;
+            $prev_prodCount = $curr_prodCount;
+            $total_prod += $qty_added;
+        }
+        
+        return $total_prod;
+    }
+}
+
