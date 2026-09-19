@@ -533,8 +533,30 @@ if ($statusTeks != 'RUNNING') {
     }
 }
 
+// 2.5 PRE-PRODUCTION IMPLICIT LOSSTIME (Sinkron dengan api_dashboard.php)
+// Hitung gap antara jadwal mulai kerja dan data pertama masuk ke log_quality
+$pre_prod_loss_sec = 0;
+$work_start_ts = strtotime($shift_info['work_start'] ?? $waktu_mulai);
+$sql_first_data = "SELECT MIN(timestamp) as first_ts FROM log_quality WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
+$res_first_data = $conn->query($sql_first_data);
+if ($res_first_data && $res_first_data->num_rows > 0) {
+    $fd = $res_first_data->fetch_assoc();
+    if (!empty($fd['first_ts'])) {
+        $fts = strtotime($fd['first_ts']);
+        if ($fts > $work_start_ts) {
+            $pre_prod_loss_sec = $fts - $work_start_ts;
+            if ($pre_prod_loss_sec > 7200) $pre_prod_loss_sec = 0; // CAP 2 jam
+        }
+    }
+}
+
+if ($pre_prod_loss_sec > 0) {
+    $pareto_map['P5M / Pre-Production'] = ($pareto_map['P5M / Pre-Production'] ?? 0) + $pre_prod_loss_sec;
+    $tpm_summary_map['Pemeliharaan / 5S'] = ($tpm_summary_map['Pemeliharaan / 5S'] ?? 0) + $pre_prod_loss_sec;
+}
+
 // 3. Kalkulasi Total Losstime Real Murni (Bebas Manipulasi Whitelist)
-$total_real_dt = $historical_real_dt + $ongoing_downtime_sec;
+$total_real_dt = $historical_real_dt + $ongoing_downtime_sec + $pre_prod_loss_sec;
 $totalLosstimeMenit = round($total_real_dt / 60);
 
 // 4. Hitung Planned Production Time (PPT) Sesuai Standar ISO 22400-2

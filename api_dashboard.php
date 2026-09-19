@@ -202,8 +202,24 @@ if ($result && $result->num_rows > 0) {
             }
         }
         
+        // 2.5 PRE-PRODUCTION IMPLICIT LOSSTIME
+        $pre_prod_loss_sec = 0;
+        $work_start_ts = strtotime($shift_info['work_start'] ?? $waktu_mulai);
+        $sql_first_data = "SELECT MIN(timestamp) as first_ts FROM log_quality WHERE $mc_where AND timestamp >= '$waktu_mulai' AND timestamp <= '$waktu_selesai'";
+        $res_first_data = $conn->query($sql_first_data);
+        if ($res_first_data && $res_first_data->num_rows > 0) {
+            $fd = $res_first_data->fetch_assoc();
+            if (!empty($fd['first_ts'])) {
+                $first_data_ts = strtotime($fd['first_ts']);
+                if ($first_data_ts > $work_start_ts) {
+                    $pre_prod_loss_sec = $first_data_ts - $work_start_ts;
+                    if ($pre_prod_loss_sec > 7200) $pre_prod_loss_sec = 0; // CAP 2 jam
+                }
+            }
+        }
+
         // 3. Kalkulasi Standar ISO 22400-2 (SSOT calculateStandardOEE)
-        $total_loss_detik = $historical_real_dt + $ongoing_real_dt;
+        $total_loss_detik = $historical_real_dt + $ongoing_real_dt + $pre_prod_loss_sec;
         $stdOEE = calculateStandardOEE($ppt_seconds, $total_loss_detik, $prodCount, $NGCount, $ideal_ct);
         $availability = $stdOEE['availability'];
         $performance = $stdOEE['performance'];

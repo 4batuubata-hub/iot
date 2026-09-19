@@ -146,10 +146,16 @@ $stats = ['total' => 0, 'updated' => 0, 'unchanged' => 0];
 if (!empty($filterTgl) || $action === 'execute_all') {
     $target_dates = !empty($filterTgl) ? [$filterTgl] : $available_dates;
     
+    // Baca jam reset dari setting_pabrik (BUKAN hardcode!)
+    $sql_sp_rc = $conn->query("SELECT jam_reset_shift1, jam_reset_shift2 FROM setting_pabrik LIMIT 1");
+    $sp_rc = ($sql_sp_rc && $sql_sp_rc->num_rows > 0) ? $sql_sp_rc->fetch_assoc() : [];
+    $rc_jam_s1 = $sp_rc['jam_reset_shift1'] ?? '16:00:00';
+    $rc_jam_s2 = $sp_rc['jam_reset_shift2'] ?? '06:00:00';
+
     foreach ($target_dates as $tgl) {
         $shifts = [
-            ['label' => 'SHIFT 1', 'start' => "$tgl 06:00:00", 'end' => "$tgl 16:00:00"],
-            ['label' => 'SHIFT 2', 'start' => "$tgl 16:00:00", 'end' => date('Y-m-d 06:00:00', strtotime("$tgl +1 day"))]
+            ['label' => 'SHIFT 1', 'start' => "$tgl $rc_jam_s2", 'end' => "$tgl $rc_jam_s1"],
+            ['label' => 'SHIFT 2', 'start' => "$tgl $rc_jam_s1", 'end' => date("Y-m-d $rc_jam_s2", strtotime("$tgl +1 day"))]
         ];
         
         foreach ($shifts as $s) {

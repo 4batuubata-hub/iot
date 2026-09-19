@@ -6864,3 +6864,48 @@ STATUS: ARSITEKTUR TIM 3-PROFILE HERMES LENGKAP DISAJIKAN.
 Pengguna dapat langsung mengeksekusi perintah CLI di atas
 untuk membuat ketiga profile di VPS Linux.
 =======================================================================
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 18 September 2026, 13:05 WIB
+Diperbarui Oleh : Developer (AI)
+-----------------------------------------------------------------------------
+
+[PERTANYAAN / REQUEST]
+Buat kode test_solder.ino untuk arduino mega dengan parameter tombol dan pin pada irfan/top3.ino. Saya ingin melakukan pengujian setelah penyolderan dengan fitur:
+- Tampilan awal 'Loading Test...' 3 detik
+- Menu: 1. Tes Keypad, 2. Tes Tombol
+- Navigasi menggunakan input angka lalu tombol 'D'
+- Tes Keypad: Menampilkan tombol keypad yang ditekan (A, B, C, D, angka, dll).
+- Tes Tombol: Menampilkan nama tombol fisik (5R, NGadd, CTRL, dll) sesuai mapping di top3.ino saat ditekan.
+
+[JAWABAN / PENYELESAIAN]
+File `irfan/test_solder.ino` telah berhasil dibuat dengan spesifikasi sebagai berikut:
+1. **Konfigurasi Pin & LCD**: Menggunakan pin keypad (Baris: 49,47,45,43 | Kolom: 11,9,8,14) dan LCD I2C (0x27) persis seperti top3.ino.
+2. **Mapping Tombol Fisik**: Total 30 pin tombol (termasuk tombol navigasi, NG, dan 25 tombol downtime fisik) telah dipetakan ke dalam array struct `Button` lengkap dengan nama labelnya (contoh: 'TPM', 'Dandory', '5R', 'NGadd').
+3. **Sistem Menu (State Machine)**:
+   - **Menu Utama**: Menunggu input '1' atau '2' dilanjutkan dengan menekan 'D' (Enter).
+   - **Mode Tes Keypad**: Membaca input `keypad.getKey()` dan menampilkannya di layar baris ke-3.
+   - **Mode Tes Tombol**: Melakukan iterasi (looping) ke 30 pin tombol menggunakan `digitalRead` (dengan mode `INPUT_PULLUP`). Dilengkapi algoritma debounce sederhana agar pembacaan stabil. Saat tombol ditarik ke LOW (ditekan), nama tombol akan muncul di layar.
+   - Tombol `*` (Bintang) digunakan di mode mana saja untuk kembali ke Menu Utama.
+
+File siap untuk langsung di-upload ke Arduino Mega untuk validasi proses penyolderan panel fisik.
+
+-----------------------------------------------------------------------------
+Tanggal & Jam : 19 September 2026, 12:15 WIB
+Diperbarui Oleh : Developer (AI)
+-----------------------------------------------------------------------------
+
+[PERTANYAAN / REQUEST]
+Eksekusi phase 2 dari implementation plan: perbaikan perhitungan losstime historis, tracking part name di dekidaka (agar tidak "Unknown"), pre-production implicit losstime, dan cron otomatis untuk memperbaiki OEE yang bernilai 0.
+
+[JAWABAN / PENYELESAIAN]
+Phase 2 telah dieksekusi dengan ringkasan sebagai berikut:
+1. `setting/recalculate_history.php` [MODIFIED]: Diubah agar membaca `jam_reset_shift1`/`jam_reset_shift2` dinamis dari tabel `setting_pabrik` alih-alih hardcode 06:00/16:00.
+2. `cron_reset.php` [MODIFIED]: Membaca konfigurasi template per-shift (`nama_template_shift1` dan `nama_template_shift2`) dari tabel `master_line` agar reset dekidaka akurat untuk masing-masing shift.
+3. `user/detail.php` & `api_dashboard.php` [MODIFIED]: Ditambahkan blok "PRE-PRODUCTION IMPLICIT LOSSTIME". Ini mendeteksi gap waktu (maks 2 jam) antara mulainya jadwal kerja dan kapan mesin/log_quality pertama kali aktif. Dimasukkan dalam pareto "P5M / Pre-Production" (dan TPM "Pemeliharaan / 5S").
+4. `user/history/detail.php` [MODIFIED]: 
+   - Menambahkan variabel `$last_known_part` sebagai fallback. Jika record tidak punya data part (`kode_proses` kosong), ia mewarisi info part terakhir yang valid, memperbaiki isu part name "Unknown".
+   - Menyertakan pre-production implicit losstime agar perhitungan di history konsisten dengan dashboard live.
+5. `cron_auto_recalc.php` [NEW]: Script otomatis yang mendeteksi data `history_summary` yang memiliki total produksi > 0 tapi `oee=0` atau `NULL`, lalu menghitung ulang OEE dan persentasenya dari data mentah `history_quality` & `history_downtime`/`log_downtime`.
+6. `auto_cron_runner.bat` [NEW]: Batch script untuk dijalankan via Windows Task Scheduler setiap 30 menit agar history ter-repair secara otomatis di background.
+Semua 6 file PHP lolos verifikasi sintaks (`php -l`).

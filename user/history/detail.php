@@ -271,6 +271,7 @@ $opHistoryData = [];
 
 $true_total_prod = 0;
 $prev_prodCount = 0; // Asumsi awal offset 0 untuk menemukan akumulasi total murni
+$last_known_part = ['part_name' => '', 'part_number' => '', 'proses_name' => '', 'ct_pcs' => 0, 'ct_jam' => 0];
 
 if ($res_logs && $res_logs->num_rows > 0) {
     while($row = $res_logs->fetch_assoc()) {
@@ -366,11 +367,17 @@ if ($res_logs && $res_logs->num_rows > 0) {
             }
         }
         
-        $pn = !empty($row['part_number']) ? $row['part_number'] : '-'; 
-        $pName = !empty($row['part_name']) ? $row['part_name'] : 'Unknown'; 
-        $proses = !empty($row['proses_name']) ? $row['proses_name'] : 'Proses 1';
-        $ct = !empty($row['ct_pcs']) ? $row['ct_pcs'] : 0; 
-        $target = !empty($row['ct_jam']) ? round($row['ct_jam']) : 0; 
+        // Part-tracking: gunakan data dari row, fallback ke last_known_part
+        $pn = !empty($row['part_number']) ? $row['part_number'] : (!empty($last_known_part['part_number']) ? $last_known_part['part_number'] : '-'); 
+        $pName = !empty($row['part_name']) ? $row['part_name'] : (!empty($last_known_part['part_name']) ? $last_known_part['part_name'] : 'Unknown'); 
+        $proses = !empty($row['proses_name']) ? $row['proses_name'] : (!empty($last_known_part['proses_name']) ? $last_known_part['proses_name'] : 'Proses 1');
+        $ct = !empty($row['ct_pcs']) ? $row['ct_pcs'] : (!empty($last_known_part['ct_pcs']) ? $last_known_part['ct_pcs'] : 0); 
+        $target = !empty($row['ct_jam']) ? round($row['ct_jam']) : (!empty($last_known_part['ct_jam']) ? round($last_known_part['ct_jam']) : 0); 
+        
+        // Update last_known_part jika row ini punya data valid
+        if (!empty($row['part_name'])) {
+            $last_known_part = ['part_name' => $row['part_name'], 'part_number' => $row['part_number'] ?? '', 'proses_name' => $row['proses_name'] ?? '', 'ct_pcs' => $row['ct_pcs'] ?? 0, 'ct_jam' => $row['ct_jam'] ?? 0];
+        }
         
         $key = $pn . '|' . $proses;
 
@@ -584,7 +591,26 @@ if ($res_dt_all && $res_dt_all->num_rows > 0) {
     }
 }
 
-$total_real_dt = $historical_real_dt;
+// 2.5 PRE-PRODUCTION IMPLICIT LOSSTIME (Konsisten dengan detail.php)
+$pre_prod_loss_sec = 0;
+$sql_first_hist = "SELECT MIN(timestamp) as first_ts FROM history_quality WHERE mcID IN ($in_mcID) AND $filter_waktu_hq";
+$res_first_hist = $conn->query(str_replace('hq.', '', $sql_first_hist));
+if ($res_first_hist && $res_first_hist->num_rows > 0) {
+    $fd = $res_first_hist->fetch_assoc();
+    if (!empty($fd['first_ts'])) {
+        $first_data_ts = strtotime($fd['first_ts']);
+        if ($first_data_ts > $shift_start_ts) {
+            $pre_prod_loss_sec = $first_data_ts - $shift_start_ts;
+            if ($pre_prod_loss_sec > 7200) $pre_prod_loss_sec = 0; // CAP 2 jam
+        }
+    }
+}
+if ($pre_prod_loss_sec > 0) {
+    $pareto_map['P5M / Pre-Production'] = ($pareto_map['P5M / Pre-Production'] ?? 0) + $pre_prod_loss_sec;
+    $tpm_summary_map['Pemeliharaan / 5S'] = ($tpm_summary_map['Pemeliharaan / 5S'] ?? 0) + $pre_prod_loss_sec;
+}
+
+$total_real_dt = $historical_real_dt + $pre_prod_loss_sec;
 $totalLosstimeMenit = round($total_real_dt / 60);
 if ($totalLosstimeMenit == 0 && !empty($summary['downtime']) && (int)$summary['downtime'] > 0) {
     $totalLosstimeMenit = round((int)$summary['downtime'] / 60);

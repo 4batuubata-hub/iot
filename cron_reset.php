@@ -187,8 +187,18 @@ if ($machines && $machines->num_rows > 0) {
         $line_m = $conn->query("SELECT lq.kode_proses, c.line FROM log_quality lq LEFT JOIN master_ct c ON lq.kode_proses = c.kode WHERE lq.mcID = '$mcID' ORDER BY lq.id ASC LIMIT 1")->fetch_assoc()['line'] ?? '';
         $template_aktif = 'DEFAULT';
         if (!empty($line_m)) {
-            $res_tpl = $conn->query("SELECT nama_template FROM master_line WHERE nama_line = '$line_m' LIMIT 1");
-            if ($res_tpl && $res_tpl->num_rows > 0) $template_aktif = $res_tpl->fetch_assoc()['nama_template'];
+            $line_m_esc = $conn->real_escape_string($line_m);
+            $res_tpl = $conn->query("SELECT nama_template, nama_template_shift1, nama_template_shift2 FROM master_line WHERE nama_line = '$line_m_esc' LIMIT 1");
+            if ($res_tpl && $res_tpl->num_rows > 0) {
+                $tpl_row = $res_tpl->fetch_assoc();
+                if ($shift_label == 'SHIFT 1' && !empty($tpl_row['nama_template_shift1'])) {
+                    $template_aktif = $tpl_row['nama_template_shift1'];
+                } elseif ($shift_label == 'SHIFT 2' && !empty($tpl_row['nama_template_shift2'])) {
+                    $template_aktif = $tpl_row['nama_template_shift2'];
+                } else {
+                    $template_aktif = $tpl_row['nama_template'] ?? 'DEFAULT';
+                }
+            }
         }
 
         $hari_history = getLogicalDay(strtotime($waktu_mulai));
